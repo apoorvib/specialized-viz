@@ -8,6 +8,9 @@ from dataclasses import dataclass
 from sklearn.cluster import DBSCAN
 import inspect
 from .patterns import CandlestickPatterns
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from matplotlib.patches import Rectangle
 
 @dataclass
 class VisualizationConfig:
@@ -46,6 +49,123 @@ class CandlestickVisualizer:
         self.patterns = CandlestickPatterns()
         self.config = config or VisualizationConfig()
         self._cached_pattern_results = {}
+     
+    def create_candlestick_chart(self, use_plotly: bool = False, **kwargs) -> Union[go.Figure, None]:
+        """
+        Create a candlestick chart using either Plotly or Matplotlib
+        
+        Args:
+            use_plotly (bool): If True, uses Plotly. If False, uses Matplotlib
+            **kwargs: Additional arguments for plotting (figsize, title, etc.)
+            
+        Returns:
+            go.Figure if use_plotly=True, None otherwise
+        """
+        if use_plotly:
+            return self._create_plotly_chart(**kwargs)
+        else:
+            return self._create_matplotlib_chart(**kwargs)
+
+    def _create_plotly_chart(self, show_volume: bool = True, title: str = 'Candlestick Chart') -> go.Figure:
+        """Create interactive Plotly candlestick chart"""
+        fig = go.Figure(data=[go.Candlestick(
+            x=self.df.index,
+            open=self.df['Open'],
+            high=self.df['High'],
+            low=self.df['Low'],
+            close=self.df['Close'],
+            name='OHLC'
+        )])
+        
+        if show_volume and 'Volume' in self.df.columns:
+            fig.add_trace(go.Bar(
+                x=self.df.index,
+                y=self.df['Volume'],
+                name='Volume',
+                yaxis='y2'
+            ))
+            
+            fig.update_layout(
+                yaxis2=dict(
+                    title='Volume',
+                    overlaying='y',
+                    side='right'
+                )
+            )
+        
+        fig.update_layout(
+            title=title,
+            yaxis_title='Price',
+            xaxis_title='Date',
+            template='plotly_white'
+        )
+        
+        return fig
+
+    def _create_matplotlib_chart(self, 
+                            bollinger_upper: pd.Series = None,
+                            bollinger_mid: pd.Series = None,
+                            bollinger_lower: pd.Series = None,
+                            pivot_points: list = None,
+                            title: str = 'OHLC Candles with Indicators',
+                            figsize: tuple = (14, 7)):
+        """Create static Matplotlib candlestick chart"""
+        fig, ax = plt.subplots(figsize=figsize)
+
+        # Ensure datetime index
+        try:
+            if not np.issubdtype(self.df.index.dtype, np.datetime64):
+                self.df.index = pd.to_datetime(self.df.index)
+        except Exception as e:
+            self.df.index = pd.to_datetime(self.df.index, utc=True)
+
+        # Convert datetime to matplotlib format
+        mdates_index = mdates.date2num(self.df.index.to_pydatetime())
+        
+        # Calculate candle width
+        if len(self.df) > 1:
+            candle_width = 0.6 * (mdates_index[1] - mdates_index[0])
+        else:
+            candle_width = 0.5
+
+        # Plot candles
+        for i, (idx, row) in enumerate(self.df.iterrows()):
+            color = 'green' if row['Close'] >= row['Open'] else 'red'
+            ax.vlines(mdates_index[i], row['Low'], row['High'], color=color, linewidth=1)
+            lower = row['Open'] if row['Open'] < row['Close'] else row['Close']
+            height = abs(row['Close'] - row['Open'])
+            rect = Rectangle((mdates_index[i] - candle_width/2, lower), 
+                            candle_width, height, 
+                            color=color, alpha=0.8)
+            ax.add_patch(rect)
+
+        # Add Bollinger Bands if provided
+        if all(band is not None for band in [bollinger_upper, bollinger_lower]):
+            x_vals = mdates.date2num(bollinger_upper.index.to_pydatetime())
+            ax.plot(x_vals, bollinger_upper.values, 'purple', linestyle='--', label='Upper BB')
+            ax.plot(x_vals, bollinger_lower.values, 'purple', linestyle='--', label='Lower BB')
+            if bollinger_mid is not None:
+                ax.plot(x_vals, bollinger_mid.values, 'orange', linestyle='--', label='Middle BB')
+            ax.fill_between(x_vals, bollinger_lower.values, bollinger_upper.values, 
+                        color='purple', alpha=0.1)
+
+        # Add pivot points if provided
+        if pivot_points:
+            for level in pivot_points:
+                ax.axhline(y=level, color='blue', linestyle='--', linewidth=0.8, alpha=0.7)
+
+        # Format plot
+        ax.xaxis_date()
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+        plt.xticks(rotation=45)
+        ax.set_title(title)
+        ax.set_xlabel('Date')
+        ax.set_ylabel('Price')
+        ax.grid(True, linestyle='--', alpha=0.3)
+        ax.legend()
+        plt.tight_layout()
+        
+        return fig
         
     def _cluster_patterns(self, window_size: int = 20) -> pd.DataFrame:
         """
@@ -53,32 +173,66 @@ class CandlestickVisualizer:
         
         Args:
             window_size (int): Rolling window size for pattern density
-            
+                
         Returns:
             pd.DataFrame: Clustered pattern data
         """
         pattern_methods = self._get_all_pattern_methods()
         pattern_density = pd.DataFrame(index=self.df.index)
         
+        # Patterns to exclude (require special handling or additional arguments)
+        patterns_to_exclude = {
+            'breakout_patterns', 'harmonic_patterns', 'multi_timeframe_patterns',
+            'pattern_combinations', 'pattern_reliability', 'volatility_adjusted_patterns'
+        }
+        
         # Calculate pattern density
         for pattern_name, pattern_func in pattern_methods.items():
+            if pattern_name in patterns_to_exclude:
+                continue
+                
             try:
                 result = pattern_func(self.df)
                 if isinstance(result, tuple):
-                    for sub_pattern, sub_name in zip(result, ['bullish', 'bearish']):
-                        density = sub_pattern.rolling(window=window_size).sum()
-                        pattern_density[f"{pattern_name}_{sub_name}"] = density
+                    # Handle patterns that return bullish/bearish signals
+                    bullish, bearish = result
+                    if isinstance(bullish, pd.DataFrame):
+                        bullish = bullish.iloc[:, 0]
+                    if isinstance(bearish, pd.DataFrame):
+                        bearish = bearish.iloc[:, 0]
+                    
+                    # Convert to numeric and calculate density
+                    bullish = pd.Series(bullish).astype(float)
+                    bearish = pd.Series(bearish).astype(float)
+                    
+                    pattern_density[f"{pattern_name}_bullish"] = bullish.rolling(window=window_size).sum()
+                    pattern_density[f"{pattern_name}_bearish"] = bearish.rolling(window=window_size).sum()
                 else:
-                    density = result.rolling(window=window_size).sum()
-                    pattern_density[pattern_name] = density
+                    # Handle single signal patterns
+                    if isinstance(result, pd.DataFrame):
+                        result = result.iloc[:, 0]
+                    
+                    # Convert to numeric and calculate density
+                    result = pd.Series(result).astype(float)
+                    pattern_density[pattern_name] = result.rolling(window=window_size).sum()
+                    
             except Exception as e:
                 print(f"Error clustering pattern {pattern_name}: {str(e)}")
         
-        # Perform DBSCAN clustering
-        clustering = DBSCAN(eps=0.5, min_samples=3)
-        pattern_density['cluster'] = clustering.fit_predict(
-            pattern_density.fillna(0)
-        )
+        # Remove columns with all zeros or NaN
+        pattern_density = pattern_density.loc[:, (pattern_density != 0).any()]
+        pattern_density = pattern_density.loc[:, pattern_density.notna().any()]
+        
+        # Perform DBSCAN clustering if we have valid data
+        if not pattern_density.empty:
+            clustering = DBSCAN(eps=0.5, min_samples=3)
+            try:
+                pattern_density['cluster'] = clustering.fit_predict(pattern_density.fillna(0))
+            except Exception as e:
+                print(f"Error in DBSCAN clustering: {str(e)}")
+                pattern_density['cluster'] = -1  # Mark all as noise if clustering fails
+        else:
+            pattern_density['cluster'] = -1  # Mark all as noise if no patterns found
         
         return pattern_density
 
@@ -200,101 +354,173 @@ class CandlestickVisualizer:
     
     def create_pattern_reliability_chart(self, lookback_window: int = 100) -> go.Figure:
         """
-        Create a visualization of pattern reliability metrics
+        Create visualization of pattern reliability metrics
         
         Args:
             lookback_window (int): Historical window for reliability calculation
-            
+                
         Returns:
             go.Figure: Plotly figure with reliability metrics
         """
         pattern_methods = self._get_all_pattern_methods()
         reliability_data = {}
         
+        # Filter out patterns that require additional arguments or return DataFrames
+        patterns_to_exclude = {
+            'breakout_patterns', 'harmonic_patterns', 'multi_timeframe_patterns',
+            'pattern_combinations', 'pattern_reliability', 'volatility_adjusted_patterns'
+        }
+        
         for pattern_name, pattern_func in pattern_methods.items():
+            if pattern_name in patterns_to_exclude:
+                continue
+                
             try:
-                pattern_reliability = self.patterns.detect_pattern_reliability(
-                    self.df, pattern_func, lookback_window
-                )
-                if not pattern_reliability.empty:
-                    reliability_data[pattern_name] = {
-                        'success_rate': pattern_reliability['success_rate'].mean(),
-                        'avg_return': pattern_reliability['avg_return'].mean(),
-                        'risk_reward': pattern_reliability['risk_reward'].mean()
-                    }
+                # Get pattern signals
+                result = pattern_func(self.df)
+                # Calculate future returns once
+                future_returns = self.df['Close'].pct_change().shift(-1)
+                
+                if isinstance(result, tuple):
+                    # Handle patterns that return bullish/bearish signals
+                    bullish, bearish = result
+                    
+                    # Convert to Series if needed and handle boolean conversion
+                    if isinstance(bullish, pd.DataFrame):
+                        bullish = bullish.iloc[:, 0]
+                    if isinstance(bearish, pd.DataFrame):
+                        bearish = bearish.iloc[:, 0]
+                    
+                    # Convert to numeric and handle NaN values
+                    bullish = pd.Series(bullish).astype(float)
+                    bearish = pd.Series(bearish).astype(float)
+                    
+                    # Calculate metrics for bullish patterns
+                    bullish_mask = bullish > 0
+                    if bullish_mask.any():
+                        reliability_data[f"{pattern_name}_bullish"] = {
+                            'success_rate': (future_returns[bullish_mask] > 0).mean() * 100,
+                            'avg_return': future_returns[bullish_mask].mean() * 100,
+                            'occurrences': bullish_mask.sum(),
+                            'risk_reward': abs(future_returns[bullish_mask].mean() / 
+                                            future_returns[bullish_mask].std()) if future_returns[bullish_mask].std() != 0 else 0
+                        }
+                    
+                    # Calculate metrics for bearish patterns
+                    bearish_mask = bearish > 0
+                    if bearish_mask.any():
+                        reliability_data[f"{pattern_name}_bearish"] = {
+                            'success_rate': (future_returns[bearish_mask] < 0).mean() * 100,
+                            'avg_return': future_returns[bearish_mask].mean() * -100,
+                            'occurrences': bearish_mask.sum(),
+                            'risk_reward': abs(future_returns[bearish_mask].mean() / 
+                                            future_returns[bearish_mask].std()) if future_returns[bearish_mask].std() != 0 else 0
+                        }
+                else:
+                    # Handle single signal patterns
+                    if isinstance(result, pd.DataFrame):
+                        result = result.iloc[:, 0]
+                    
+                    # Convert to numeric and handle NaN values
+                    result = pd.Series(result).astype(float)
+                    pattern_mask = result > 0
+                    
+                    if pattern_mask.any():
+                        reliability_data[pattern_name] = {
+                            'success_rate': (future_returns[pattern_mask] > 0).mean() * 100,
+                            'avg_return': future_returns[pattern_mask].mean() * 100,
+                            'occurrences': pattern_mask.sum(),
+                            'risk_reward': abs(future_returns[pattern_mask].mean() / 
+                                            future_returns[pattern_mask].std()) if future_returns[pattern_mask].std() != 0 else 0
+                        }
             except Exception as e:
                 print(f"Error calculating reliability for {pattern_name}: {str(e)}")
+                continue
+
+        # Create figure with subplots
+        fig = make_subplots(
+            rows=2, cols=2,
+            subplot_titles=('Success Rate (%)', 'Average Return (%)', 
+                        'Number of Occurrences', 'Risk-Reward Ratio'),
+            vertical_spacing=0.12
+        )
         
-        # Create subplots for different metrics
-        fig = make_subplots(rows=3, cols=1,
-                           subplot_titles=('Success Rate', 'Average Return', 'Risk-Reward Ratio'))
-        
+        # Prepare data for plotting
         patterns = list(reliability_data.keys())
+        metrics = {
+            'success_rate': [],
+            'avg_return': [],
+            'occurrences': [],
+            'risk_reward': []
+        }
         
-        # Success Rate
+        for pattern in patterns:
+            for metric in metrics:
+                metrics[metric].append(reliability_data[pattern][metric])
+        
+        # Add traces for each metric
         fig.add_trace(
-            go.Bar(
-                x=patterns,
-                y=[data['success_rate'] for data in reliability_data.values()],
+            go.Bar(x=patterns, y=metrics['success_rate'], 
                 name='Success Rate',
-                marker_color=self.config.color_scheme['neutral']
-            ),
+                marker_color=self.config.color_scheme['neutral']),
             row=1, col=1
         )
         
-        # Average Return
-        returns = [data['avg_return'] for data in reliability_data.values()]
         colors = [self.config.color_scheme['bullish'] if r > 0 else 
-                 self.config.color_scheme['bearish'] for r in returns]
+                self.config.color_scheme['bearish'] for r in metrics['avg_return']]
         fig.add_trace(
-            go.Bar(
-                x=patterns,
-                y=returns,
+            go.Bar(x=patterns, y=metrics['avg_return'],
                 name='Avg Return',
-                marker_color=colors
-            ),
+                marker_color=colors),
+            row=1, col=2
+        )
+        
+        fig.add_trace(
+            go.Bar(x=patterns, y=metrics['occurrences'],
+                name='Occurrences',
+                marker_color=self.config.color_scheme['neutral']),
             row=2, col=1
         )
         
-        # Risk-Reward Ratio
         fig.add_trace(
-            go.Bar(
-                x=patterns,
-                y=[data['risk_reward'] for data in reliability_data.values()],
+            go.Bar(x=patterns, y=metrics['risk_reward'],
                 name='Risk-Reward',
-                marker_color=self.config.color_scheme['complex']
-            ),
-            row=3, col=1
+                marker_color=self.config.color_scheme['complex']),
+            row=2, col=2
         )
         
+        # Update layout
         fig.update_layout(
             height=self.config.default_height * 1.5,
             width=self.config.default_width,
             template=self.config.theme,
-            showlegend=False
+            showlegend=False,
+            title_text="Pattern Reliability Analysis",
+            title_x=0.5
         )
+        
+        # Update axes
+        fig.update_xaxes(tickangle=45, tickfont=dict(size=10))
+        fig.update_yaxes(title_text="Percentage", row=1, col=1)
+        fig.update_yaxes(title_text="Percentage", row=1, col=2)
+        fig.update_yaxes(title_text="Count", row=2, col=1)
+        fig.update_yaxes(title_text="Ratio", row=2, col=2)
         
         return fig
-
     def create_interactive_dashboard(self) -> go.Figure:
-        """
-        Create an interactive dashboard with pattern filtering
-        
-        Returns:
-            go.Figure: Plotly figure with interactive controls
-        """
-        # Create base figure with subplots
+        """Create interactive dashboard with pattern filtering"""
+        # Create subplot structure
         fig = make_subplots(
             rows=2, cols=2,
-            subplot_titles=('Price Action', 'Pattern Distribution', 
-                          'Pattern Reliability', 'Volume Analysis'),
+            subplot_titles=('Price Action with Patterns', 'Pattern Distribution', 
+                        'Pattern Occurrences', 'Volume Profile'),
             specs=[[{"colspan": 2}, None],
-                  [{}, {}]],
-            vertical_spacing=0.12,
-            horizontal_spacing=0.1
+                [{"type": "pie"}, {"type": "xy"}]],
+            vertical_spacing=0.15,
+            horizontal_spacing=0.15
         )
         
-        # Add candlestick chart
+        # Add candlestick chart (always visible)
         fig.add_trace(
             go.Candlestick(
                 x=self.df.index,
@@ -309,61 +535,229 @@ class CandlestickVisualizer:
         
         # Add pattern distribution
         pattern_counts = self._get_pattern_distribution()
-        fig.add_trace(
-            go.Pie(
-                labels=pattern_counts.index,
-                values=pattern_counts.values,
-                name='Pattern Distribution'
-            ),
-            row=2, col=1
-        )
+        if not pattern_counts.empty:
+            top_patterns = pattern_counts.sort_values(ascending=False).head(10)
+            fig.add_trace(
+                go.Pie(
+                    labels=top_patterns.index,
+                    values=top_patterns.values,
+                    name='Pattern Distribution',
+                    textinfo='label+percent',
+                    textposition='outside',
+                    hole=0.4,
+                    showlegend=False,
+                    pull=[0.1 if i == 0 else 0 for i in range(len(top_patterns))],
+                    marker=dict(colors=[
+                        self.config.color_scheme['bullish'] if 'bullish' in label else
+                        self.config.color_scheme['bearish'] if 'bearish' in label else
+                        self.config.color_scheme['neutral'] for label in top_patterns.index
+                    ])
+                ),
+                row=2, col=1
+            )
         
-        # Add volume analysis
+        # Add volume profile
         if 'Volume' in self.df.columns:
             fig.add_trace(
                 go.Bar(
                     x=self.df.index,
                     y=self.df['Volume'],
                     name='Volume',
-                    marker_color=self._get_volume_colors()
+                    marker_color=self._get_volume_colors(),
+                    opacity=0.7
                 ),
                 row=2, col=2
             )
+            
+            fig.add_trace(
+                go.Scatter(
+                    x=self.df.index,
+                    y=self.df['Volume'].rolling(window=20).mean(),
+                    name='Volume MA (20)',
+                    line=dict(color='rgba(0,0,0,0.5)', width=2)
+                ),
+                row=2, col=2
+            )
+
+        # Store base traces count
+        n_base_traces = len(fig.data)
         
-        # Add buttons for pattern filtering
-        pattern_buttons = self._create_pattern_buttons()
+        # Get pattern methods
+        pattern_methods = {k: v for k, v in self._get_all_pattern_methods().items()
+                        if k not in {'breakout_patterns', 'harmonic_patterns', 
+                                    'multi_timeframe_patterns', 'pattern_combinations', 
+                                    'pattern_reliability', 'volatility_adjusted_patterns'}}
         
+        # Add traces for each pattern (initially visible)
+        pattern_traces = {}
+        for pattern_name, pattern_func in pattern_methods.items():
+            try:
+                result = pattern_func(self.df)
+                if isinstance(result, tuple):
+                    bullish, bearish = result
+                    pattern_traces[pattern_name] = []
+                    
+                    # Add bullish markers
+                    if pd.Series(bullish).any():
+                        trace_idx = len(fig.data)
+                        fig.add_trace(
+                            go.Scatter(
+                                x=self.df.index[bullish],
+                                y=self.df['Low'][bullish] * 0.99,
+                                mode='markers',
+                                marker=dict(
+                                    symbol='triangle-up',
+                                    size=10,
+                                    color=self.config.color_scheme['bullish']
+                                ),
+                                name=f'{pattern_name} (Bullish)',
+                                visible=True  # Initially visible
+                            ),
+                            row=1, col=1
+                        )
+                        pattern_traces[pattern_name].append(trace_idx)
+                    
+                    # Add bearish markers
+                    if pd.Series(bearish).any():
+                        trace_idx = len(fig.data)
+                        fig.add_trace(
+                            go.Scatter(
+                                x=self.df.index[bearish],
+                                y=self.df['High'][bearish] * 1.01,
+                                mode='markers',
+                                marker=dict(
+                                    symbol='triangle-down',
+                                    size=10,
+                                    color=self.config.color_scheme['bearish']
+                                ),
+                                name=f'{pattern_name} (Bearish)',
+                                visible=True  # Initially visible
+                            ),
+                            row=1, col=1
+                        )
+                        pattern_traces[pattern_name].append(trace_idx)
+                else:
+                    if pd.Series(result).any():
+                        trace_idx = len(fig.data)
+                        fig.add_trace(
+                            go.Scatter(
+                                x=self.df.index[result],
+                                y=self.df['Low'][result] * 0.99,
+                                mode='markers',
+                                marker=dict(
+                                    symbol='circle',
+                                    size=8,
+                                    color=self.config.color_scheme['neutral']
+                                ),
+                                name=pattern_name,
+                                visible=True  # Initially visible
+                            ),
+                            row=1, col=1
+                        )
+                        pattern_traces[pattern_name] = [trace_idx]
+            except Exception as e:
+                print(f"Error adding pattern {pattern_name}: {str(e)}")
+        
+        # Create buttons
+        buttons = [{
+            'label': 'All Patterns',
+            'method': 'update',
+            'args': [{
+                'visible': [True] * len(fig.data)  # All traces visible
+            }]
+        }]
+        
+        # Add pattern-specific buttons
+        for pattern_name, trace_indices in pattern_traces.items():
+            if trace_indices:  # Only add button if pattern has traces
+                visibility = [i < n_base_traces or i in trace_indices for i in range(len(fig.data))]
+                buttons.append({
+                    'label': pattern_name.replace('_', ' ').title(),
+                    'method': 'update',
+                    'args': [{'visible': visibility}]
+                })
+        
+        # Update layout
         fig.update_layout(
+            height=self.config.default_height * 1.5,
+            width=self.config.default_width,
+            template=self.config.theme,
+            showlegend=True,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1,
+                font=dict(size=10)
+            ),
+            margin=dict(t=150, b=50, l=50, r=50),
             updatemenus=[{
-                'buttons': pattern_buttons,
+                'buttons': buttons,
                 'direction': 'down',
                 'showactive': True,
                 'x': 0.1,
-                'y': 1.1
+                'y': 1.15,
+                'xanchor': 'left',
+                'yanchor': 'top',
+                'font': {'size': 12}
             }],
-            height=self.config.default_height * 1.5,
-            width=self.config.default_width,
-            template=self.config.theme
+            title=dict(
+                text="Interactive Pattern Analysis Dashboard",
+                y=0.95,
+                x=0.5,
+                xanchor='center',
+                yanchor='top',
+                font=dict(size=16)
+            )
         )
         
+        # Update axes
+        fig.update_xaxes(title_text="Date", rangeslider_visible=False, row=1, col=1)
+        fig.update_yaxes(title_text="Price", row=1, col=1)
+        fig.update_xaxes(title_text="Date", row=2, col=2)
+        fig.update_yaxes(title_text="Volume", row=2, col=2)
+        
+        # Update subplot titles
+        for annotation in fig.layout.annotations:
+            annotation.font.size = 14
+            annotation.font.color = self.config.color_scheme['text']
+            annotation.y = annotation.y - 0.02
+        
         return fig
-
     def _get_pattern_distribution(self) -> pd.Series:
         """Calculate pattern distribution"""
         pattern_methods = self._get_all_pattern_methods()
         pattern_counts = {}
         
+        # Patterns to exclude (require special handling or additional arguments)
+        patterns_to_exclude = {
+            'multi_timeframe_patterns',  # Requires df_weekly and df_monthly
+            'pattern_combinations',      # Special return type
+            'pattern_reliability',       # Requires pattern_func argument
+            'breakout_patterns',         # Returns DataFrame
+            'harmonic_patterns',         # Returns DataFrame
+            'volatility_adjusted_patterns'  # Returns DataFrame
+        }
+        
         for pattern_name, pattern_func in pattern_methods.items():
+            if pattern_name in patterns_to_exclude:
+                continue
+                
             try:
                 result = pattern_func(self.df)
                 if isinstance(result, tuple):
                     for sub_pattern, sub_name in zip(result, ['bullish', 'bearish']):
-                        pattern_counts[f"{pattern_name}_{sub_name}"] = sub_pattern.sum()
+                        if isinstance(sub_pattern, pd.DataFrame):
+                            sub_pattern = sub_pattern.iloc[:, 0]
+                        pattern_counts[f"{pattern_name}_{sub_name}"] = sub_pattern.astype(int).sum()
                 else:
-                    pattern_counts[pattern_name] = result.sum()
+                    if isinstance(result, pd.DataFrame):
+                        result = result.iloc[:, 0]
+                    pattern_counts[pattern_name] = result.astype(int).sum()
             except Exception as e:
                 print(f"Error counting pattern {pattern_name}: {str(e)}")
-                
+                    
         return pd.Series(pattern_counts)
 
     def _get_volume_colors(self) -> List[str]:
@@ -377,23 +771,111 @@ class CandlestickVisualizer:
         pattern_methods = self._get_all_pattern_methods()
         buttons = []
         
+        # First trace is candlestick, last trace is volume
+        base_visibility = [True]  # Candlestick always visible
+        if 'Volume' in self.df.columns:
+            base_visibility.append(True)  # Volume always visible
+        
         # Add 'All Patterns' button
         buttons.append({
             'label': 'All Patterns',
             'method': 'update',
-            'args': [{'visible': [True] * len(pattern_methods)}]
+            'args': [{
+                'visible': base_visibility
+            }]
         })
         
         # Add individual pattern buttons
-        for i, pattern_name in enumerate(pattern_methods.keys()):
-            visible = [False] * len(pattern_methods)
-            visible[i] = True
-            buttons.append({
-                'label': pattern_name,
-                'method': 'update',
-                'args': [{'visible': visible}]
-            })
-            
+        for pattern_name, pattern_func in pattern_methods.items():
+            try:
+                # Get pattern signals
+                result = pattern_func(self.df)
+                if isinstance(result, tuple):
+                    # For patterns that return bullish/bearish signals
+                    bullish, bearish = result
+                    visibility = base_visibility.copy()  # Start with base visibility
+                    
+                    # Add trace for this pattern
+                    fig_update = {
+                        'visible': visibility,
+                        'showlegend': True
+                    }
+                    
+                    # Add candlestick trace
+                    fig_update['candlestick'] = [{
+                        'x': self.df.index,
+                        'open': self.df['Open'],
+                        'high': self.df['High'],
+                        'low': self.df['Low'],
+                        'close': self.df['Close'],
+                        'type': 'candlestick',
+                        'name': 'Price'
+                    }]
+                    
+                    # Add pattern markers
+                    if bullish.any():
+                        fig_update['scatter'] = [{
+                            'x': self.df.index[bullish],
+                            'y': self.df['Low'][bullish],
+                            'mode': 'markers',
+                            'marker': {'symbol': 'triangle-up', 'size': 10, 'color': self.config.color_scheme['bullish']},
+                            'name': f'{pattern_name} (Bullish)'
+                        }]
+                    
+                    if bearish.any():
+                        fig_update['scatter'].append({
+                            'x': self.df.index[bearish],
+                            'y': self.df['High'][bearish],
+                            'mode': 'markers',
+                            'marker': {'symbol': 'triangle-down', 'size': 10, 'color': self.config.color_scheme['bearish']},
+                            'name': f'{pattern_name} (Bearish)'
+                        })
+                    
+                    buttons.append({
+                        'label': pattern_name,
+                        'method': 'update',
+                        'args': [fig_update]
+                    })
+                else:
+                    # For single signal patterns
+                    visibility = base_visibility.copy()
+                    
+                    fig_update = {
+                        'visible': visibility,
+                        'showlegend': True
+                    }
+                    
+                    # Add candlestick trace
+                    fig_update['candlestick'] = [{
+                        'x': self.df.index,
+                        'open': self.df['Open'],
+                        'high': self.df['High'],
+                        'low': self.df['Low'],
+                        'close': self.df['Close'],
+                        'type': 'candlestick',
+                        'name': 'Price'
+                    }]
+                    
+                    # Add pattern markers
+                    if result.any():
+                        fig_update['scatter'] = [{
+                            'x': self.df.index[result],
+                            'y': self.df['Low'][result],
+                            'mode': 'markers',
+                            'marker': {'symbol': 'circle', 'size': 10, 'color': self.config.color_scheme['neutral']},
+                            'name': pattern_name
+                        }]
+                    
+                    buttons.append({
+                        'label': pattern_name,
+                        'method': 'update',
+                        'args': [fig_update]
+                    })
+                    
+            except Exception as e:
+                print(f"Error creating button for {pattern_name}: {str(e)}")
+                continue
+        
         return buttons
 
     def add_pattern_correlation_analysis(self, fig: go.Figure) -> go.Figure:
@@ -709,3 +1191,16 @@ class CandlestickVisualizer:
                 print(f"Error adding indicator {name}: {str(e)}")
         
         return fig
+    
+    def _get_all_pattern_methods(self) -> Dict[str, Callable]:
+        """
+        Get all pattern detection methods from CandlestickPatterns class
+        
+        Returns:
+            Dict[str, Callable]: Dictionary of pattern names and their detection methods
+        """
+        pattern_methods = {}
+        for name, method in inspect.getmembers(CandlestickPatterns, predicate=inspect.isfunction):
+            if name.startswith('detect_'):
+                pattern_methods[name.replace('detect_', '')] = method
+        return pattern_methods

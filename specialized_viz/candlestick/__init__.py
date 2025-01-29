@@ -1,4 +1,4 @@
+from .visualization import CandlestickVisualizer, VisualizationConfig
 from .patterns import CandlestickPatterns
-from .visualization import CandlestickVisualizer
 
-__all__ = ['CandlestickPatterns', 'CandlestickVisualizer']
+__all__ = ['CandlestickPatterns', 'CandlestickVisualizer', 'VisualizationConfig']

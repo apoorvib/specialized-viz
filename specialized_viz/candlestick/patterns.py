@@ -234,15 +234,15 @@ class CandlestickPatterns:
         prev_body = abs(df['Close'].shift(1) - df['Open'].shift(1))
         
         tweezer_bottom = (
-            (df['Low'] - df['Low'].shift(1)).abs() < price_threshold &  # Same low
-            (df['Close'].shift(1) < df['Open'].shift(1)) &  # Previous bearish
-            (df['Close'] > df['Open']) &  # Current bullish
-            (body / (df['High'] - df['Low']) > body_threshold) &  # Significant bodies
-            (prev_body / (df['High'].shift(1) - df['Low'].shift(1)) > body_threshold)
+            ((df['Low'] - df['Low'].shift(1)).abs() < price_threshold) &  # Same low
+            ((df['Close'].shift(1) < df['Open'].shift(1))) &  # Previous bearish
+            ((df['Close'] > df['Open'])) &  # Current bullish
+            ((body / (df['High'] - df['Low']) > body_threshold)) &  # Significant bodies
+            ((prev_body / (df['High'].shift(1) - df['Low'].shift(1)) > body_threshold))
         )
         
         tweezer_top = (
-            (df['High'] - df['High'].shift(1)).abs() < price_threshold &  # Same high
+            ((df['High'] - df['High'].shift(1)).abs() < price_threshold) &  # Same high
             (df['Close'].shift(1) > df['Open'].shift(1)) &  # Previous bullish
             (df['Close'] < df['Open']) &  # Current bearish
             (body / (df['High'] - df['Low']) > body_threshold) &  # Significant bodies

@@ -13,17 +13,33 @@ import pywt
 
 @dataclass
 class TimeseriesConfig:
-    """Enhanced configuration settings for time series analysis."""
+    """Configuration for time series analysis settings.
+    
+    Attributes:
+        decomposition_method: Method for time series decomposition ('additive' or 'multiplicative')
+        seasonal_periods: List of periods for seasonality analysis
+        trend_window: Window size for trend calculations
+        forecast_horizon: Number of periods to forecast
+        model_type: Type of model to use ('ensemble', 'sarima', 'ets', 'lstm', 'nbeats', 'var')
+        cv_folds: Number of cross-validation folds
+        optimization_trials: Number of hyperparameter optimization trials
+        confidence_level: Confidence level for prediction intervals
+        use_exogenous: Whether to use exogenous variables in models
+        lstm_units: Number of LSTM units
+        lstm_epochs: Number of training epochs for LSTM
+    """
     decomposition_method: str = 'additive'
-    seasonal_periods: List[int] = field(default_factory=lambda: [7, 12, 30, 365])
+    seasonal_periods: List[int] = field(default_factory=lambda: [5, 21, 63, 252])  # Daily, Weekly, Monthly, Yearly
     trend_window: int = 20
-    smooth_window: int = 5
     forecast_horizon: int = 30
-    anomaly_threshold: float = 0.05
-    cycle_max_period: int = 365
-    causality_max_lag: int = 10
-    min_window_size: int = 30
-
+    model_type: str = 'ensemble'
+    cv_folds: int = 5
+    optimization_trials: int = 100
+    confidence_level: float = 0.95
+    use_exogenous: bool = False
+    lstm_units: int = 50
+    lstm_epochs: int = 100
+    
 class TimeseriesAnalysis:
     """Enhanced class for time series analysis operations."""
     
@@ -652,16 +668,21 @@ class TimeseriesAnalysis:
             'divergence_rates': lyap
         }
 
-    def decompose(self, column: str) -> Dict[str, pd.Series]:
+    def decompose(self, column: str, period: int = None) -> Dict[str, pd.Series]:
         """Decompose time series into trend, seasonal, and residual components.
         
         Args:
             column: Name of the column to decompose
+            period: Seasonal period to use (defaults to first period in config)
             
         Returns:
             Dictionary containing trend, seasonal, and residual components
         """
         series = self.data[column]
+        
+        # Use first seasonal period if none specified
+        if period is None:
+            period = self.config.seasonal_periods[0]
         
         # Calculate trend using rolling mean
         trend = series.rolling(window=self.config.trend_window, 
@@ -669,8 +690,8 @@ class TimeseriesAnalysis:
         
         # Calculate seasonal component
         seasonal_means = pd.DataFrame()
-        for i in range(self.config.seasonal_periods):
-            seasonal_means[i] = series[i::self.config.seasonal_periods].reset_index(drop=True)
+        for i in range(period):
+            seasonal_means[i] = series[i::period].reset_index(drop=True)
         seasonal_pattern = seasonal_means.mean()
         
         # Normalize seasonal pattern
@@ -679,7 +700,7 @@ class TimeseriesAnalysis:
         # Create full seasonal component
         seasonal = pd.Series(index=series.index, dtype=float)
         for i in range(len(series)):
-            seasonal.iloc[i] = seasonal_pattern[i % self.config.seasonal_periods]
+            seasonal.iloc[i] = seasonal_pattern[i % period]
         
         if self.config.decomposition_method == 'multiplicative':
             residual = series / (trend * seasonal)
@@ -692,7 +713,6 @@ class TimeseriesAnalysis:
             'residual': residual,
             'original': series
         }
-    
     def analyze_trend(self, column: str) -> Dict[str, Union[float, pd.Series]]:
         """Analyze trend characteristics of the time series.
         

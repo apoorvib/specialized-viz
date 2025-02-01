@@ -525,16 +525,17 @@ class TimeseriesVisualizer:
         
         return fig
         
-    def plot_decomposition(self, column: str) -> go.Figure:
+    def plot_decomposition(self, column: str, period: int = None) -> go.Figure:
         """Create decomposition plot showing trend, seasonal, and residual components.
         
         Args:
             column: Name of the column to decompose
+            period: Optional seasonal period to use
             
         Returns:
             Plotly figure with decomposition plots
         """
-        components = self.analyzer.decompose(column)
+        components = self.analyzer.decompose(column, period=period)
         
         fig = make_subplots(
             rows=4, cols=1,
@@ -586,6 +587,7 @@ class TimeseriesVisualizer:
             row=4, col=1
         )
         
+        # Update layout
         fig.update_layout(
             height=800,
             width=1200,
@@ -593,8 +595,14 @@ class TimeseriesVisualizer:
             showlegend=True
         )
         
+        # Update y-axes titles
+        fig.update_yaxes(title_text="Value", row=1, col=1)
+        fig.update_yaxes(title_text="Trend", row=2, col=1)
+        fig.update_yaxes(title_text="Seasonal", row=3, col=1)
+        fig.update_yaxes(title_text="Residual", row=4, col=1)
+        
         return fig
-    
+        
     def plot_trend_analysis(self, column: str) -> go.Figure:
         """Create trend analysis plot.
         

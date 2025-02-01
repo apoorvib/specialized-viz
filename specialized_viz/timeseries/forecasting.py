@@ -946,3 +946,208 @@ def nbeats_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
                             freq=pd.infer_freq(target.index))[1:]),
         'model': nbeats
     }
+    
+def seasonal_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
+    """Forecast using seasonal decomposition and trend modeling (alternative to Prophet).
+    
+    Args:
+        features: Feature DataFrame
+        target: Target series
+        
+    Returns:
+        Dictionary with forecast results
+    """
+    from statsmodels.tsa.seasonal import seasonal_decompose
+    from statsmodels.tsa.holtwinters import ExponentialSmoothing
+    
+    # Perform seasonal decomposition
+    decomposition = seasonal_decompose(target, period=self.config.seasonal_periods[0])
+    
+    # Forecast trend using Holt-Winters
+    hw_model = ExponentialSmoothing(
+        target,
+        seasonal_periods=self.config.seasonal_periods[0],
+        trend='add',
+        seasonal='add'
+    ).fit()
+    
+    # Generate forecasts
+    forecast = hw_model.forecast(self.config.forecast_horizon)
+    
+    # Add prediction intervals
+    conf_int = hw_model.get_prediction(
+        start=len(target),
+        end=len(target) + self.config.forecast_horizon - 1
+    ).conf_int(alpha=0.05)
+    
+    return {
+        'forecast': forecast,
+        'lower_bound': conf_int.iloc[:, 0],
+        'upper_bound': conf_int.iloc[:, 1],
+        'components': {
+            'trend': decomposition.trend,
+            'seasonal': decomposition.seasonal,
+            'resid': decomposition.resid
+        }
+    }
+
+def sarima_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
+    """Forecast using SARIMA model.
+    
+    Args:
+        features: Feature DataFrame
+        target: Target series
+        
+    Returns:
+        Dictionary with SARIMA forecast results
+    """
+    from statsmodels.tsa.statespace.sarimax import SARIMAX
+    from pmdarima import auto_arima
+    
+    # Automatically find best SARIMA parameters
+    auto_model = auto_arima(
+        target,
+        seasonal=True,
+        m=self.config.seasonal_periods[0],
+        suppress_warnings=True,
+        error_action="ignore",
+        max_p=5, max_q=5,
+        max_P=2, max_Q=2,
+        max_order=5,
+        max_d=2, max_D=1
+    )
+    
+    # Get best parameters
+    order = auto_model.order
+    seasonal_order = auto_model.seasonal_order
+    
+    # Fit SARIMA model
+    model = SARIMAX(
+        target,
+        order=order,
+        seasonal_order=seasonal_order
+    ).fit(disp=False)
+    
+    # Generate forecasts with confidence intervals
+    forecast = model.get_forecast(self.config.forecast_horizon)
+    
+    return {
+        'forecast': forecast.predicted_mean,
+        'lower_bound': forecast.conf_int().iloc[:, 0],
+        'upper_bound': forecast.conf_int().iloc[:, 1],
+        'model': model,
+        'order': order,
+        'seasonal_order': seasonal_order
+    }
+
+def ets_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
+    """Forecast using ETS (Error, Trend, Seasonal) model.
+    
+    Args:
+        features: Feature DataFrame
+        target: Target series
+        
+    Returns:
+        Dictionary with ETS forecast results
+    """
+    from statsmodels.tsa.holtwinters import ExponentialSmoothing
+    
+    # Determine best ETS model type using cross-validation
+    ets_types = [
+        ('add', 'add'),
+        ('add', 'mul'),
+        ('mul', 'add'),
+        ('mul', 'mul')
+    ]
+    
+    best_aic = float('inf')
+    best_model = None
+    best_type = None
+    
+    for trend, seasonal in ets_types:
+        try:
+            model = ExponentialSmoothing(
+                target,
+                trend=trend,
+                seasonal=seasonal,
+                seasonal_periods=self.config.seasonal_periods[0]
+            ).fit()
+            
+            if model.aic < best_aic:
+                best_aic = model.aic
+                best_model = model
+                best_type = (trend, seasonal)
+        except:
+            continue
+    
+    # Generate forecasts with the best model
+    forecast = best_model.forecast(self.config.forecast_horizon)
+    
+    # Calculate prediction intervals using simulation
+    simulations = []
+    for _ in range(100):
+        sim = best_model.simulate(
+            nsimulations=self.config.forecast_horizon,
+            anchor=len(target)
+        )
+        simulations.append(sim)
+    
+    # Calculate confidence intervals from simulations
+    simulations = np.array(simulations)
+    lower = np.percentile(simulations, 2.5, axis=0)
+    upper = np.percentile(simulations, 97.5, axis=0)
+    
+    return {
+        'forecast': forecast,
+        'lower_bound': pd.Series(lower, index=forecast.index),
+        'upper_bound': pd.Series(upper, index=forecast.index),
+        'model': best_model,
+        'model_type': best_type
+    }
+
+def combined_seasonal_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
+    """Combine multiple seasonal forecasting methods.
+    
+    Args:
+        features: Feature DataFrame
+        target: Target series
+        
+    Returns:
+        Dictionary with combined forecast results
+    """
+    # Get forecasts from different models
+    hw_result = self.seasonal_forecast(features, target)
+    sarima_result = self.sarima_forecast(features, target)
+    ets_result = self.ets_forecast(features, target)
+    
+    # Combine forecasts with equal weights
+    combined_forecast = (
+        hw_result['forecast'] +
+        sarima_result['forecast'] +
+        ets_result['forecast']
+    ) / 3
+    
+    # Calculate combined confidence intervals
+    lower_bound = (
+        hw_result['lower_bound'] +
+        sarima_result['lower_bound'] +
+        ets_result['lower_bound']
+    ) / 3
+    
+    upper_bound = (
+        hw_result['upper_bound'] +
+        sarima_result['upper_bound'] +
+        ets_result['upper_bound']
+    ) / 3
+    
+    return {
+        'forecast': combined_forecast,
+        'lower_bound': lower_bound,
+        'upper_bound': upper_bound,
+        'component_forecasts': {
+            'hw': hw_result['forecast'],
+            'sarima': sarima_result['forecast'],
+            'ets': ets_result['forecast']
+        },
+        'decomposition': hw_result['components']
+    }

@@ -5,21 +5,20 @@ setup(
     version="0.1.0",
     packages=find_packages(),
     install_requires=[
-        'numpy>=1.20.0',
-        'pandas>=1.3.0',
+        'numpy',
         'matplotlib>=3.4.0',
         'plotly>=5.3.0',
         'networkx>=2.6.0',
         'scikit-learn>=0.24.0',
         'yfinance',
-        'statsmodels>=0.13.0',  # For VAR models
-        'fbprophet>=0.7.1',     # For Prophet models
-        'tensorflow>=2.8.0',    # For LSTM
-        'nbeats-pytorch>=1.3.0',  # For N-BEATS
-        'optuna>=2.10.0',      # For hyperparameter optimization
-        'river>=0.8.0',        # For online learning
+        'statsmodels>=0.13.0',     # For VAR models and statistical tests
+        'tensorflow>=2.8.0',       # For LSTM
+        'optuna>=2.10.0',         # For hyperparameter optimization
+        'river>=0.8.0',           # For online learning
         'scipy>=1.7.0',
-        'shap>=0.40.0'         # For feature importance
+        'shap>=0.40.0',           # For feature importance
+        'pmdarima>=2.0.0',        # For automatic SARIMA
+        'PyWavelets>=1.1.1'       # For wavelet analysis
     ],
     extras_require={
         'dev': [

@@ -1,6 +1,22 @@
 # Specialized Data Visualization Library
 
-A comprehensive Python library for financial technical analysis and visualization, specializing in candlestick patterns, market regime detection, and interactive analysis tools.
+A comprehensive Python library for financial technical analysis and visualization, specializing in candlestick patterns, market regime detection, time series analysis, and interactive analysis tools.
+
+![PyPI version](https://img.shields.io/pypi/v/specialized-viz)
+![Python versions](https://img.shields.io/pypi/pyversions/specialized-viz)
+![License](https://img.shields.io/github/license/apoorvib/specialized-viz)
+
+## Table of Contents
+- [Features](#features)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Usage Guide](#usage-guide)
+- [Modules](#modules)
+- [API Reference](#api-reference)
+- [Best Practices](#best-practices)
+- [Contributing](#contributing)
+- [License](#license)
+- [Support](#support)
 
 ## Features
 
@@ -20,7 +36,33 @@ A comprehensive Python library for financial technical analysis and visualizatio
 - Combined regime classification
 - Momentum and market state analysis
 
-### 3. Interactive Visualization
+### 3. Time Series Analysis & Forecasting
+- Multiple Forecasting Models:
+  - Traditional Methods:
+    - ARIMA/SARIMA
+    - Exponential Smoothing
+    - Linear/Ridge/Lasso Regression
+  - Advanced Models:
+    - Prophet (Facebook's forecasting tool)
+    - VAR (Vector Autoregression)
+    - LSTM Neural Networks
+    - N-BEATS Neural Network
+  - Ensemble Methods:
+    - Random Forest
+    - Gradient Boosting
+    - Model Combination with Optimal Weights
+- Feature Engineering:
+  - Automatic lag feature creation
+  - Rolling statistics
+  - Calendar features
+  - Cyclical encoding
+- Forecast Evaluation:
+  - Multiple error metrics
+  - Cross-validation
+  - Directional accuracy
+  - Scale-independent metrics
+
+### 4. Interactive Visualization
 - Customizable candlestick charts
 - Pattern overlays and annotations
 - Multi-timeframe views
@@ -28,164 +70,106 @@ A comprehensive Python library for financial technical analysis and visualizatio
 - Pattern clustering visualization
 - Interactive pattern filtering
 
-### 4. Advanced Analytics
-- Pattern reliability metrics
-- Statistical significance testing
-- Pattern sequence analysis
-- Correlation analysis
-- Custom indicator support
-
 ## Installation
 
 ### Prerequisites
 - Python 3.7+
 - pip package manager
 
-### Dependencies
+### Basic Installation
 ```bash
-pip install -r requirements.txt
+pip install specialized-viz
+```
+
+### Full Installation (with all forecasting models)
+```bash
+pip install specialized-viz[all]
+```
+
+Note: Some models like Prophet require additional system dependencies. For Ubuntu/Debian:
+```bash
+sudo apt-get update
+sudo apt-get install python3-dev gcc
+```
+
+## Quick Start
+
+```python
+from specialized_viz import CandlestickVisualizer, TimeseriesForecasting
+import yfinance as yf
+
+# Get sample data
+data = yf.download('AAPL', start='2023-01-01')
+
+# Candlestick Analysis
+viz = CandlestickVisualizer(data)
+patterns = viz.create_candlestick_chart()
+patterns.show()
+
+# Time Series Forecasting
+ts = TimeseriesForecasting(data)
+forecast = ts.prophet_forecast(target=data['Close'])
+forecast.show()
 ```
 
 ## Usage Guide
 
-### Basic Usage
+### Basic Time Series Analysis
+```python
+from specialized_viz import TimeseriesForecasting
 
-```
-from specialized_viz import CandlestickVisualizer
-import pandas as pd
+# Initialize forecaster
+ts = TimeseriesForecasting(data)
 
-# Load your financial data
-df = pd.read_csv('your_data.csv')
+# Create features
+features = ts.create_features(column='Close')
 
-# Initialize the visualizer
-viz = CandlestickVisualizer(df)
+# Train ensemble model
+ensemble_result = ts.ensemble_forecast(features, data['Close'])
 
-# Create basic candlestick chart with pattern detection
-fig = viz.create_candlestick_chart()
-fig.show()
-```
-
-### Advanced Pattern Detection
-
-```
-# Detect specific patterns
-patterns = viz.detect_pattern_reliability(lookback_window=100)
-
-# Create pattern reliability chart
-reliability_fig = viz.create_pattern_reliability_chart()
-reliability_fig.show()
-
-# Analyze pattern clusters
-cluster_fig = viz.create_pattern_cluster_chart()
-cluster_fig.show()
+# Generate probabilistic forecast
+prob_forecast = ts.probabilistic_forecast(features, data['Close'])
 ```
 
-### Market Regime Analysis
+### Advanced Forecasting Models
+```python
+# Prophet Model
+prophet_forecast = ts.prophet_forecast(features, data['Close'])
 
+# LSTM Neural Network
+lstm_forecast = ts.lstm_forecast(features, data['Close'])
+
+# N-BEATS Model
+nbeats_forecast = ts.nbeats_forecast(features, data['Close'])
+
+# Vector Autoregression
+var_forecast = ts.var_forecast(features, data['Close'])
 ```
-# Detect market regimes
-regimes = viz.detect_market_regime(window=20)
-
-# Visualize market regimes
-regime_fig = viz.create_regime_visualization()
-regime_fig.show()
-```
-
-### Multi-timeframe Analysis
-
-```
-# Create multi-timeframe chart
-mtf_fig = viz.create_multi_timeframe_chart(
-    weekly_df=weekly_data,
-    monthly_df=monthly_data
-)
-mtf_fig.show()
-```
-
-## Configuration
-
-### Visualization Settings
-
-```
-from specialized_viz import VisualizationConfig
-
-# Create custom configuration
-config = VisualizationConfig(
-    color_scheme={
-        'bullish': '#2ecc71',
-        'bearish': '#e74c3c',
-        'neutral': '#3498db',
-        'complex': '#9b59b6'
-    },
-    theme='plotly_white',
-    pattern_opacity=0.7
-)
-
-# Initialize visualizer with custom config
-viz = CandlestickVisualizer(df, config=config)
-```
-
-### Pattern Detection Parameters
-
-```
-# Customize pattern detection parameters
-custom_patterns = viz.detect_candlestick_patterns(
-    doji_threshold=0.1,
-    hammer_body_ratio=0.3,
-    engulfing_factor=1.5
-)
-```
-
-## API Reference
-
-### CandlestickVisualizer Class
-
-#### Main Methods:
-
-- `create_candlestick_chart()`: Creates basic candlestick chart
-- `create_pattern_reliability_chart()`: Visualizes pattern reliability
-- `create_pattern_cluster_chart()`: Shows pattern clustering analysis
-- `create_regime_visualization()`: Displays market regime analysis
-- `create_interactive_dashboard()`: Creates interactive analysis dashboard
-
-#### Analysis Methods:
-
-- `detect_market_regime()`: Analyzes market conditions
-- `add_pattern_correlation_analysis()`: Calculates pattern correlations
-- `analyze_pattern_sequences()`: Studies pattern sequences
-- `add_price_action_confirmation()`: Adds price action indicators
-
-#### Utility Methods:
-
-- `add_technical_indicators()`: Overlays technical indicators
-- `_calculate_atr()`: Calculates Average True Range
-- `_get_pattern_distribution()`: Analyzes pattern distribution
-
-### VisualizationConfig Class
-
-Configuration options for customizing visualizations:
-
-- `color_scheme`: Custom color definitions
-- `theme`: Plot theme selection
-- `default_height/width`: Chart dimensions
-- `pattern_opacity`: Pattern visualization opacity
-- `show_grid`: Grid display toggle
-- `annotation_font_size`: Text annotation size
 
 ## Best Practices
 
-1. Data Preparation
-   - Ensure your data includes OHLCV columns
-   - Clean missing values
-   - Use appropriate timeframe data
-2. Pattern Detection
-   - Start with default parameters
-   - Adjust thresholds based on your needs
-   - Validate pattern reliability
-3. Visualization
-   - Use appropriate timeframes for analysis
-   - Consider combining multiple indicators
-   - Customize colors for clarity
+### 1. Data Preparation
+- Ensure your data includes OHLCV columns
+- Clean missing values
+- Use appropriate timeframe data
+
+### 2. Model Selection
+- Start with simple models (ensemble of traditional methods)
+- Use Prophet for data with strong seasonality
+- Consider LSTM/N-BEATS for complex patterns
+- Use VAR for multivariate analysis
+
+### 3. Feature Engineering
+- Include domain-specific features
+- Consider multiple time horizons
+- Test feature importance
+- Remove highly correlated features
+
+### 4. Model Evaluation
+- Use multiple error metrics
+- Consider computational requirements
+- Validate on recent data
+- Monitor prediction intervals
 
 ## Contributing
 

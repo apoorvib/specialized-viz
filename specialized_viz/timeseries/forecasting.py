@@ -42,6 +42,15 @@ class ForecastConfig:
         'seasonality_prior_scale': 10,
         'holidays_prior_scale': 10
     })
+        forecast_horizon: int = 30
+    train_test_split: float = 0.8
+    cv_folds: int = 5
+    features_lag: List[int] = field(default_factory=lambda: [1, 7, 14, 30])
+    features_window: List[int] = field(default_factory=lambda: [7, 14, 30, 90])
+    model_type: str = 'ensemble'
+    optimization_trials: int = 100
+    confidence_level: float = 0.95
+    seasonal_periods: List[int] = field(default_factory=lambda: [5, 21, 63, 252])  # Daily, Weekly, Monthly, Yearly
 
 
 class TimeseriesForecasting:
@@ -740,414 +749,414 @@ class TimeseriesForecasting:
         p_value = 1 - norm.cdf(q_stat)
         return p_value
 
-def prophet_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
-    """Forecast using Facebook Prophet.
-    
-    Args:
-        features: Feature DataFrame
-        target: Target series
+    def prophet_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
+        """Forecast using Facebook Prophet.
         
-    Returns:
-        Dictionary with forecast results
-    """
-    from fbprophet import Prophet
-    
-    # Prepare data for Prophet
-    df_prophet = pd.DataFrame({
-        'ds': target.index,
-        'y': target.values
-    })
-    
-    # Add exogenous features if specified
-    if self.config.use_exogenous:
-        for col in features.columns:
-            df_prophet[col] = features[col]
-    
-    # Initialize and fit Prophet model
-    model = Prophet(**self.config.prophet_params)
-    
-    # Add exogenous regressors
-    if self.config.use_exogenous:
-        for col in features.columns:
-            model.add_regressor(col)
-    
-    model.fit(df_prophet)
-    
-    # Create future dataframe
-    future = model.make_future_dataframe(
-        periods=self.config.forecast_horizon,
-        freq=pd.infer_freq(target.index)
-    )
-    
-    # Add features to future if using exogenous
-    if self.config.use_exogenous:
-        for col in features.columns:
-            future[col] = features[col]
-    
-    # Make forecast
-    forecast = model.predict(future)
-    
-    return {
-        'forecast': forecast['yhat'],
-        'lower_bound': forecast['yhat_lower'],
-        'upper_bound': forecast['yhat_upper'],
-        'components': model.component_predictions(forecast)
-    }
-
-def var_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
-    """Forecast using Vector Autoregression.
-    
-    Args:
-        features: Feature DataFrame
-        target: Target series
-        
-    Returns:
-        Dictionary with VAR forecast results
-    """
-    from statsmodels.tsa.api import VAR
-    
-    # Combine target and features
-    data = pd.concat([target, features], axis=1)
-    
-    # Fit VAR model
-    model = VAR(data)
-    results = model.fit()
-    
-    # Make forecast
-    forecast = results.forecast(data.values, steps=self.config.forecast_horizon)
-    
-    return {
-        'forecast': pd.Series(forecast[:, 0], 
-                            index=pd.date_range(target.index[-1], 
-                            periods=self.config.forecast_horizon+1, 
-                            freq=pd.infer_freq(target.index))[1:]),
-        'model': results,
-        'feature_forecasts': pd.DataFrame(forecast[:, 1:], 
-                                        columns=features.columns)
-    }
-
-def lstm_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
-    """Forecast using LSTM neural network.
-    
-    Args:
-        features: Feature DataFrame
-        target: Target series
-        
-    Returns:
-        Dictionary with LSTM forecast results
-    """
-    import tensorflow as tf
-    from tensorflow.keras.models import Sequential
-    from tensorflow.keras.layers import LSTM, Dense, Dropout
-    
-    # Prepare data for LSTM
-    def create_sequences(data, seq_length):
-        xs, ys = [], []
-        for i in range(len(data) - seq_length):
-            x = data.iloc[i:(i + seq_length)]
-            y = data.iloc[i + seq_length]
-            xs.append(x)
-            ys.append(y)
-        return np.array(xs), np.array(ys)
-    
-    # Normalize data
-    scaler = StandardScaler()
-    scaled_data = scaler.fit_transform(
-        pd.concat([target.to_frame(), features], axis=1)
-    )
-    
-    # Create sequences
-    X, y = create_sequences(
-        pd.DataFrame(scaled_data), 
-        seq_length=max(self.config.features_lag)
-    )
-    
-    # Build LSTM model
-    model = Sequential([
-        LSTM(self.config.lstm_units, return_sequences=True,
-             input_shape=(X.shape[1], X.shape[2])),
-        Dropout(0.2),
-        LSTM(self.config.lstm_units // 2),
-        Dropout(0.2),
-        Dense(1)
-    ])
-    
-    model.compile(optimizer='adam', loss='mse')
-    
-    # Train model
-    model.fit(X, y, epochs=self.config.lstm_epochs, 
-              batch_size=32, verbose=0)
-    
-    # Generate forecast
-    last_sequence = scaled_data[-max(self.config.features_lag):]
-    forecast = []
-    
-    for _ in range(self.config.forecast_horizon):
-        next_pred = model.predict(
-            last_sequence.reshape(1, last_sequence.shape[0], 
-                                last_sequence.shape[1])
-        )
-        forecast.append(next_pred[0, 0])
-        # Update sequence
-        last_sequence = np.roll(last_sequence, -1, axis=0)
-        last_sequence[-1] = next_pred
-    
-    # Inverse transform forecast
-    forecast = scaler.inverse_transform(
-        np.column_stack([forecast, np.zeros((len(forecast), 
-                                           features.shape[1]))])
-    )[:, 0]
-    
-    return {
-        'forecast': pd.Series(forecast, 
-                            index=pd.date_range(target.index[-1], 
-                            periods=self.config.forecast_horizon+1, 
-                            freq=pd.infer_freq(target.index))[1:]),
-        'model': model
-    }
-
-def nbeats_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
-    """Forecast using N-BEATS neural network.
-    
-    Args:
-        features: Feature DataFrame
-        target: Target series
-        
-    Returns:
-        Dictionary with N-BEATS forecast results
-    """
-    from nbeats_pytorch import NBeatsNet
-    
-    # Prepare data
-    scaler = StandardScaler()
-    scaled_target = scaler.fit_transform(target.values.reshape(-1, 1))
-    
-    # Configure N-BEATS model
-    nbeats = NBeatsNet(
-        stack_types=['trend', 'seasonality'],
-        forecast_length=self.config.forecast_horizon,
-        backcast_length=3 * self.config.forecast_horizon,
-        hidden_layer_units=256
-    )
-    
-    # Train model
-    nbeats.fit(scaled_target, 
-               epochs=self.config.lstm_epochs, 
-               verbose=False)
-    
-    # Generate forecast
-    forecast = nbeats.predict(scaled_target)
-    forecast = scaler.inverse_transform(forecast.reshape(-1, 1))
-    
-    return {
-        'forecast': pd.Series(forecast.flatten(), 
-                            index=pd.date_range(target.index[-1], 
-                            periods=self.config.forecast_horizon+1, 
-                            freq=pd.infer_freq(target.index))[1:]),
-        'model': nbeats
-    }
-    
-def seasonal_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
-    """Forecast using seasonal decomposition and trend modeling (alternative to Prophet).
-    
-    Args:
-        features: Feature DataFrame
-        target: Target series
-        
-    Returns:
-        Dictionary with forecast results
-    """
-    from statsmodels.tsa.seasonal import seasonal_decompose
-    from statsmodels.tsa.holtwinters import ExponentialSmoothing
-    
-    # Perform seasonal decomposition
-    decomposition = seasonal_decompose(target, period=self.config.seasonal_periods[0])
-    
-    # Forecast trend using Holt-Winters
-    hw_model = ExponentialSmoothing(
-        target,
-        seasonal_periods=self.config.seasonal_periods[0],
-        trend='add',
-        seasonal='add'
-    ).fit()
-    
-    # Generate forecasts
-    forecast = hw_model.forecast(self.config.forecast_horizon)
-    
-    # Add prediction intervals
-    conf_int = hw_model.get_prediction(
-        start=len(target),
-        end=len(target) + self.config.forecast_horizon - 1
-    ).conf_int(alpha=0.05)
-    
-    return {
-        'forecast': forecast,
-        'lower_bound': conf_int.iloc[:, 0],
-        'upper_bound': conf_int.iloc[:, 1],
-        'components': {
-            'trend': decomposition.trend,
-            'seasonal': decomposition.seasonal,
-            'resid': decomposition.resid
-        }
-    }
-
-def sarima_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
-    """Forecast using SARIMA model.
-    
-    Args:
-        features: Feature DataFrame
-        target: Target series
-        
-    Returns:
-        Dictionary with SARIMA forecast results
-    """
-    from statsmodels.tsa.statespace.sarimax import SARIMAX
-    from pmdarima import auto_arima
-    
-    # Automatically find best SARIMA parameters
-    auto_model = auto_arima(
-        target,
-        seasonal=True,
-        m=self.config.seasonal_periods[0],
-        suppress_warnings=True,
-        error_action="ignore",
-        max_p=5, max_q=5,
-        max_P=2, max_Q=2,
-        max_order=5,
-        max_d=2, max_D=1
-    )
-    
-    # Get best parameters
-    order = auto_model.order
-    seasonal_order = auto_model.seasonal_order
-    
-    # Fit SARIMA model
-    model = SARIMAX(
-        target,
-        order=order,
-        seasonal_order=seasonal_order
-    ).fit(disp=False)
-    
-    # Generate forecasts with confidence intervals
-    forecast = model.get_forecast(self.config.forecast_horizon)
-    
-    return {
-        'forecast': forecast.predicted_mean,
-        'lower_bound': forecast.conf_int().iloc[:, 0],
-        'upper_bound': forecast.conf_int().iloc[:, 1],
-        'model': model,
-        'order': order,
-        'seasonal_order': seasonal_order
-    }
-
-def ets_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
-    """Forecast using ETS (Error, Trend, Seasonal) model.
-    
-    Args:
-        features: Feature DataFrame
-        target: Target series
-        
-    Returns:
-        Dictionary with ETS forecast results
-    """
-    from statsmodels.tsa.holtwinters import ExponentialSmoothing
-    
-    # Determine best ETS model type using cross-validation
-    ets_types = [
-        ('add', 'add'),
-        ('add', 'mul'),
-        ('mul', 'add'),
-        ('mul', 'mul')
-    ]
-    
-    best_aic = float('inf')
-    best_model = None
-    best_type = None
-    
-    for trend, seasonal in ets_types:
-        try:
-            model = ExponentialSmoothing(
-                target,
-                trend=trend,
-                seasonal=seasonal,
-                seasonal_periods=self.config.seasonal_periods[0]
-            ).fit()
+        Args:
+            features: Feature DataFrame
+            target: Target series
             
-            if model.aic < best_aic:
-                best_aic = model.aic
-                best_model = model
-                best_type = (trend, seasonal)
-        except:
-            continue
-    
-    # Generate forecasts with the best model
-    forecast = best_model.forecast(self.config.forecast_horizon)
-    
-    # Calculate prediction intervals using simulation
-    simulations = []
-    for _ in range(100):
-        sim = best_model.simulate(
-            nsimulations=self.config.forecast_horizon,
-            anchor=len(target)
-        )
-        simulations.append(sim)
-    
-    # Calculate confidence intervals from simulations
-    simulations = np.array(simulations)
-    lower = np.percentile(simulations, 2.5, axis=0)
-    upper = np.percentile(simulations, 97.5, axis=0)
-    
-    return {
-        'forecast': forecast,
-        'lower_bound': pd.Series(lower, index=forecast.index),
-        'upper_bound': pd.Series(upper, index=forecast.index),
-        'model': best_model,
-        'model_type': best_type
-    }
-
-def combined_seasonal_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
-    """Combine multiple seasonal forecasting methods.
-    
-    Args:
-        features: Feature DataFrame
-        target: Target series
+        Returns:
+            Dictionary with forecast results
+        """
+        from fbprophet import Prophet
         
-    Returns:
-        Dictionary with combined forecast results
-    """
-    # Get forecasts from different models
-    hw_result = self.seasonal_forecast(features, target)
-    sarima_result = self.sarima_forecast(features, target)
-    ets_result = self.ets_forecast(features, target)
+        # Prepare data for Prophet
+        df_prophet = pd.DataFrame({
+            'ds': target.index,
+            'y': target.values
+        })
+        
+        # Add exogenous features if specified
+        if self.config.use_exogenous:
+            for col in features.columns:
+                df_prophet[col] = features[col]
+        
+        # Initialize and fit Prophet model
+        model = Prophet(**self.config.prophet_params)
+        
+        # Add exogenous regressors
+        if self.config.use_exogenous:
+            for col in features.columns:
+                model.add_regressor(col)
+        
+        model.fit(df_prophet)
+        
+        # Create future dataframe
+        future = model.make_future_dataframe(
+            periods=self.config.forecast_horizon,
+            freq=pd.infer_freq(target.index)
+        )
+        
+        # Add features to future if using exogenous
+        if self.config.use_exogenous:
+            for col in features.columns:
+                future[col] = features[col]
+        
+        # Make forecast
+        forecast = model.predict(future)
+        
+        return {
+            'forecast': forecast['yhat'],
+            'lower_bound': forecast['yhat_lower'],
+            'upper_bound': forecast['yhat_upper'],
+            'components': model.component_predictions(forecast)
+        }
+
+    def var_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
+        """Forecast using Vector Autoregression.
+        
+        Args:
+            features: Feature DataFrame
+            target: Target series
+            
+        Returns:
+            Dictionary with VAR forecast results
+        """
+        from statsmodels.tsa.api import VAR
+        
+        # Combine target and features
+        data = pd.concat([target, features], axis=1)
+        
+        # Fit VAR model
+        model = VAR(data)
+        results = model.fit()
+        
+        # Make forecast
+        forecast = results.forecast(data.values, steps=self.config.forecast_horizon)
+        
+        return {
+            'forecast': pd.Series(forecast[:, 0], 
+                                index=pd.date_range(target.index[-1], 
+                                periods=self.config.forecast_horizon+1, 
+                                freq=pd.infer_freq(target.index))[1:]),
+            'model': results,
+            'feature_forecasts': pd.DataFrame(forecast[:, 1:], 
+                                            columns=features.columns)
+        }
+
+    def lstm_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
+        """Forecast using LSTM neural network.
+        
+        Args:
+            features: Feature DataFrame
+            target: Target series
+            
+        Returns:
+            Dictionary with LSTM forecast results
+        """
+        import tensorflow as tf
+        from tensorflow.keras.models import Sequential
+        from tensorflow.keras.layers import LSTM, Dense, Dropout
+        
+        # Prepare data for LSTM
+        def create_sequences(data, seq_length):
+            xs, ys = [], []
+            for i in range(len(data) - seq_length):
+                x = data.iloc[i:(i + seq_length)]
+                y = data.iloc[i + seq_length]
+                xs.append(x)
+                ys.append(y)
+            return np.array(xs), np.array(ys)
+        
+        # Normalize data
+        scaler = StandardScaler()
+        scaled_data = scaler.fit_transform(
+            pd.concat([target.to_frame(), features], axis=1)
+        )
+        
+        # Create sequences
+        X, y = create_sequences(
+            pd.DataFrame(scaled_data), 
+            seq_length=max(self.config.features_lag)
+        )
+        
+        # Build LSTM model
+        model = Sequential([
+            LSTM(self.config.lstm_units, return_sequences=True,
+                input_shape=(X.shape[1], X.shape[2])),
+            Dropout(0.2),
+            LSTM(self.config.lstm_units // 2),
+            Dropout(0.2),
+            Dense(1)
+        ])
+        
+        model.compile(optimizer='adam', loss='mse')
+        
+        # Train model
+        model.fit(X, y, epochs=self.config.lstm_epochs, 
+                batch_size=32, verbose=0)
+        
+        # Generate forecast
+        last_sequence = scaled_data[-max(self.config.features_lag):]
+        forecast = []
+        
+        for _ in range(self.config.forecast_horizon):
+            next_pred = model.predict(
+                last_sequence.reshape(1, last_sequence.shape[0], 
+                                    last_sequence.shape[1])
+            )
+            forecast.append(next_pred[0, 0])
+            # Update sequence
+            last_sequence = np.roll(last_sequence, -1, axis=0)
+            last_sequence[-1] = next_pred
+        
+        # Inverse transform forecast
+        forecast = scaler.inverse_transform(
+            np.column_stack([forecast, np.zeros((len(forecast), 
+                                            features.shape[1]))])
+        )[:, 0]
+        
+        return {
+            'forecast': pd.Series(forecast, 
+                                index=pd.date_range(target.index[-1], 
+                                periods=self.config.forecast_horizon+1, 
+                                freq=pd.infer_freq(target.index))[1:]),
+            'model': model
+        }
+
+    def nbeats_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
+        """Forecast using N-BEATS neural network.
+        
+        Args:
+            features: Feature DataFrame
+            target: Target series
+            
+        Returns:
+            Dictionary with N-BEATS forecast results
+        """
+        from nbeats_pytorch import NBeatsNet
+        
+        # Prepare data
+        scaler = StandardScaler()
+        scaled_target = scaler.fit_transform(target.values.reshape(-1, 1))
+        
+        # Configure N-BEATS model
+        nbeats = NBeatsNet(
+            stack_types=['trend', 'seasonality'],
+            forecast_length=self.config.forecast_horizon,
+            backcast_length=3 * self.config.forecast_horizon,
+            hidden_layer_units=256
+        )
+        
+        # Train model
+        nbeats.fit(scaled_target, 
+                epochs=self.config.lstm_epochs, 
+                verbose=False)
+        
+        # Generate forecast
+        forecast = nbeats.predict(scaled_target)
+        forecast = scaler.inverse_transform(forecast.reshape(-1, 1))
+        
+        return {
+            'forecast': pd.Series(forecast.flatten(), 
+                                index=pd.date_range(target.index[-1], 
+                                periods=self.config.forecast_horizon+1, 
+                                freq=pd.infer_freq(target.index))[1:]),
+            'model': nbeats
+        }
     
-    # Combine forecasts with equal weights
-    combined_forecast = (
-        hw_result['forecast'] +
-        sarima_result['forecast'] +
-        ets_result['forecast']
-    ) / 3
-    
-    # Calculate combined confidence intervals
-    lower_bound = (
-        hw_result['lower_bound'] +
-        sarima_result['lower_bound'] +
-        ets_result['lower_bound']
-    ) / 3
-    
-    upper_bound = (
-        hw_result['upper_bound'] +
-        sarima_result['upper_bound'] +
-        ets_result['upper_bound']
-    ) / 3
-    
-    return {
-        'forecast': combined_forecast,
-        'lower_bound': lower_bound,
-        'upper_bound': upper_bound,
-        'component_forecasts': {
-            'hw': hw_result['forecast'],
-            'sarima': sarima_result['forecast'],
-            'ets': ets_result['forecast']
-        },
-        'decomposition': hw_result['components']
-    }
+    def seasonal_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
+        """Forecast using seasonal decomposition and trend modeling (alternative to Prophet).
+        
+        Args:
+            features: Feature DataFrame
+            target: Target series
+            
+        Returns:
+            Dictionary with forecast results
+        """
+        from statsmodels.tsa.seasonal import seasonal_decompose
+        from statsmodels.tsa.holtwinters import ExponentialSmoothing
+        
+        # Perform seasonal decomposition
+        decomposition = seasonal_decompose(target, period=self.config.seasonal_periods[0])
+        
+        # Forecast trend using Holt-Winters
+        hw_model = ExponentialSmoothing(
+            target,
+            seasonal_periods=self.config.seasonal_periods[0],
+            trend='add',
+            seasonal='add'
+        ).fit()
+        
+        # Generate forecasts
+        forecast = hw_model.forecast(self.config.forecast_horizon)
+        
+        # Add prediction intervals
+        conf_int = hw_model.get_prediction(
+            start=len(target),
+            end=len(target) + self.config.forecast_horizon - 1
+        ).conf_int(alpha=0.05)
+        
+        return {
+            'forecast': forecast,
+            'lower_bound': conf_int.iloc[:, 0],
+            'upper_bound': conf_int.iloc[:, 1],
+            'components': {
+                'trend': decomposition.trend,
+                'seasonal': decomposition.seasonal,
+                'resid': decomposition.resid
+            }
+        }
+
+    def sarima_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
+        """Forecast using SARIMA model.
+        
+        Args:
+            features: Feature DataFrame
+            target: Target series
+            
+        Returns:
+            Dictionary with SARIMA forecast results
+        """
+        from statsmodels.tsa.statespace.sarimax import SARIMAX
+        from pmdarima import auto_arima
+        
+        # Automatically find best SARIMA parameters
+        auto_model = auto_arima(
+            target,
+            seasonal=True,
+            m=self.config.seasonal_periods[0],
+            suppress_warnings=True,
+            error_action="ignore",
+            max_p=5, max_q=5,
+            max_P=2, max_Q=2,
+            max_order=5,
+            max_d=2, max_D=1
+        )
+        
+        # Get best parameters
+        order = auto_model.order
+        seasonal_order = auto_model.seasonal_order
+        
+        # Fit SARIMA model
+        model = SARIMAX(
+            target,
+            order=order,
+            seasonal_order=seasonal_order
+        ).fit(disp=False)
+        
+        # Generate forecasts with confidence intervals
+        forecast = model.get_forecast(self.config.forecast_horizon)
+        
+        return {
+            'forecast': forecast.predicted_mean,
+            'lower_bound': forecast.conf_int().iloc[:, 0],
+            'upper_bound': forecast.conf_int().iloc[:, 1],
+            'model': model,
+            'order': order,
+            'seasonal_order': seasonal_order
+        }
+
+    def ets_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
+        """Forecast using ETS (Error, Trend, Seasonal) model.
+        
+        Args:
+            features: Feature DataFrame
+            target: Target series
+            
+        Returns:
+            Dictionary with ETS forecast results
+        """
+        from statsmodels.tsa.holtwinters import ExponentialSmoothing
+        
+        # Determine best ETS model type using cross-validation
+        ets_types = [
+            ('add', 'add'),
+            ('add', 'mul'),
+            ('mul', 'add'),
+            ('mul', 'mul')
+        ]
+        
+        best_aic = float('inf')
+        best_model = None
+        best_type = None
+        
+        for trend, seasonal in ets_types:
+            try:
+                model = ExponentialSmoothing(
+                    target,
+                    trend=trend,
+                    seasonal=seasonal,
+                    seasonal_periods=self.config.seasonal_periods[0]
+                ).fit()
+                
+                if model.aic < best_aic:
+                    best_aic = model.aic
+                    best_model = model
+                    best_type = (trend, seasonal)
+            except:
+                continue
+        
+        # Generate forecasts with the best model
+        forecast = best_model.forecast(self.config.forecast_horizon)
+        
+        # Calculate prediction intervals using simulation
+        simulations = []
+        for _ in range(100):
+            sim = best_model.simulate(
+                nsimulations=self.config.forecast_horizon,
+                anchor=len(target)
+            )
+            simulations.append(sim)
+        
+        # Calculate confidence intervals from simulations
+        simulations = np.array(simulations)
+        lower = np.percentile(simulations, 2.5, axis=0)
+        upper = np.percentile(simulations, 97.5, axis=0)
+        
+        return {
+            'forecast': forecast,
+            'lower_bound': pd.Series(lower, index=forecast.index),
+            'upper_bound': pd.Series(upper, index=forecast.index),
+            'model': best_model,
+            'model_type': best_type
+        }
+
+    def combined_seasonal_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
+        """Combine multiple seasonal forecasting methods.
+        
+        Args:
+            features: Feature DataFrame
+            target: Target series
+            
+        Returns:
+            Dictionary with combined forecast results
+        """
+        # Get forecasts from different models
+        hw_result = self.seasonal_forecast(features, target)
+        sarima_result = self.sarima_forecast(features, target)
+        ets_result = self.ets_forecast(features, target)
+        
+        # Combine forecasts with equal weights
+        combined_forecast = (
+            hw_result['forecast'] +
+            sarima_result['forecast'] +
+            ets_result['forecast']
+        ) / 3
+        
+        # Calculate combined confidence intervals
+        lower_bound = (
+            hw_result['lower_bound'] +
+            sarima_result['lower_bound'] +
+            ets_result['lower_bound']
+        ) / 3
+        
+        upper_bound = (
+            hw_result['upper_bound'] +
+            sarima_result['upper_bound'] +
+            ets_result['upper_bound']
+        ) / 3
+        
+        return {
+            'forecast': combined_forecast,
+            'lower_bound': lower_bound,
+            'upper_bound': upper_bound,
+            'component_forecasts': {
+                'hw': hw_result['forecast'],
+                'sarima': sarima_result['forecast'],
+                'ets': ets_result['forecast']
+            },
+            'decomposition': hw_result['components']
+        }

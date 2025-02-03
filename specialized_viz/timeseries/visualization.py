@@ -45,8 +45,12 @@ class TimeseriesVisualizer:
             )
         )
         
+        # Calculate ACF manually
+        max_lag = min(40, len(series) // 2)  # Use reasonable max lag
+        lags = range(1, max_lag + 1)
+        acf_values = [series.autocorr(lag=lag) for lag in range(max_lag + 1)]
+        
         # ACF Plot
-        acf_values = pd.Series(series).autocorr(lag=None)
         fig.add_trace(
             go.Bar(
                 x=list(range(len(acf_values))),
@@ -58,7 +62,7 @@ class TimeseriesVisualizer:
         
         # PACF Plot
         from statsmodels.tsa.stattools import pacf
-        pacf_values = pacf(series.dropna())
+        pacf_values = pacf(series.dropna(), nlags=max_lag)
         fig.add_trace(
             go.Bar(
                 x=list(range(len(pacf_values))),
@@ -94,9 +98,24 @@ class TimeseriesVisualizer:
                 row=2, col=2
             )
             
-        fig.update_layout(height=800, width=1200, showlegend=False)
-        return fig
+        fig.update_layout(
+            height=800, 
+            width=1200, 
+            showlegend=False,
+            title_text="Correlation Analysis"
+        )
         
+        # Update axes labels
+        fig.update_xaxes(title_text="Lag", row=1, col=1)
+        fig.update_xaxes(title_text="Lag", row=1, col=2)
+        fig.update_xaxes(title_text="Date", row=2, col=1)
+        
+        fig.update_yaxes(title_text="ACF", row=1, col=1)
+        fig.update_yaxes(title_text="PACF", row=1, col=2)
+        fig.update_yaxes(title_text="Correlation", row=2, col=1)
+        
+        return fig
+            
     def plot_distribution_evolution(self, column: str) -> go.Figure:
         """Create distribution analysis over time.
         
@@ -869,26 +888,5 @@ class TimeseriesVisualizer:
     # )
     
     # return fig
-
-
-
-"""Time series visualization module for specialized-viz library."""
-
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import pandas as pd
-from typing import Dict, Optional
-from .analysis import TimeseriesAnalysis, TimeseriesConfig
-
-class TimeseriesVisualizer:
-    """Visualization class for time series analysis."""
-    
-    def __init__(self, analyzer: TimeseriesAnalysis):
-        """Initialize visualizer with analyzer instance.
-        
-        Args:
-            analyzer: TimeseriesAnalysis instance
-        """
-        self.analyzer = analyzer
         
     

@@ -18,7 +18,11 @@ setup(
         'scipy>=1.7.0',
         'shap>=0.40.0',           # For feature importance
         'pmdarima>=2.0.0',        # For automatic SARIMA
-        'PyWavelets>=1.1.1'       # For wavelet analysis
+        'PyWavelets>=1.1.1',      # For wavelet analysis
+        'nbformat>=4.2.0',        # For Plotly rendering in notebooks
+        'ipywidgets>=7.0.0',      # For interactive widgets
+        'ipykernel>=5.3.0',       # For Jupyter integration
+        'jupyter>=1.0.0',         # For notebook support
     ],
     extras_require={
         'dev': [

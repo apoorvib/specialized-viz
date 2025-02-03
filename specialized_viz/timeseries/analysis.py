@@ -2,12 +2,13 @@
 
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Union
 from dataclasses import dataclass, field
 from scipy import stats, signal
 from sklearn.ensemble import IsolationForest
 from sklearn.neighbors import LocalOutlierFactor
 from sklearn.cluster import DBSCAN
+from sklearn.linear_model import LinearRegression
 from scipy.fft import fft, fftfreq
 import pywt
 
@@ -27,6 +28,7 @@ class TimeseriesConfig:
         use_exogenous: Whether to use exogenous variables in models
         lstm_units: Number of LSTM units
         lstm_epochs: Number of training epochs for LSTM
+        cycle_max_period: Maximum period for cycle analysis
     """
     decomposition_method: str = 'additive'
     seasonal_periods: List[int] = field(default_factory=lambda: [5, 21, 63, 252])  # Daily, Weekly, Monthly, Yearly
@@ -39,7 +41,8 @@ class TimeseriesConfig:
     use_exogenous: bool = False
     lstm_units: int = 50
     lstm_epochs: int = 100
-    
+    cycle_max_period: int = 252  # Default to one trading year
+        
 class TimeseriesAnalysis:
     """Enhanced class for time series analysis operations."""
     
@@ -125,20 +128,31 @@ class TimeseriesAnalysis:
         
     def _detect_holiday_effects(self, series: pd.Series) -> Dict:
         """Detect and quantify holiday effects in the series."""
-        holidays = pd.DataFrame()
+        # Create DataFrame with same index as series
+        holidays = pd.DataFrame(index=series.index)
         
-        # Define common holidays (can be expanded)
-        holidays['is_weekend'] = series.index.weekday.isin([5, 6])
+        # Add holiday indicators using proper date attributes
+        holidays['is_weekend'] = series.index.dayofweek.isin([5, 6])
         holidays['month_end'] = series.index.is_month_end
-        holidays['year_end'] = series.index.is_year_end
+        
+        # Handle year end correctly
+        holidays['fiscal_year_end'] = (series.index.month == 12) & (series.index.day == 31)
         
         effects = {}
         for holiday in holidays.columns:
-            effect_size = series[holidays[holiday]].mean() - series[~holidays[holiday]].mean()
-            effects[holiday] = effect_size
+            # Calculate mean difference for holiday vs non-holiday
+            holiday_values = series[holidays[holiday]]
+            non_holiday_values = series[~holidays[holiday]]
+            
+            if len(holiday_values) > 0 and len(non_holiday_values) > 0:
+                holiday_mean = holiday_values.mean()
+                non_holiday_mean = non_holiday_values.mean()
+                effects[holiday] = holiday_mean - non_holiday_mean
+            else:
+                effects[holiday] = 0.0
             
         return effects
-
+    
     def detect_anomalies(self, column: str, methods: List[str] = None) -> Dict[str, pd.Series]:
         """Detect anomalies using multiple methods.
         
@@ -263,13 +277,21 @@ class TimeseriesAnalysis:
         
     def _detect_periodicity(self, series: pd.Series) -> Dict:
         """Detect periodic components."""
-        # Use autocorrelation to detect periods
-        autocorr = pd.Series(series).autocorr(lag=None)
-        peaks, _ = signal.find_peaks(autocorr, height=0.1)
+        # Calculate autocorrelation with explicit lags
+        max_lag = min(len(series) // 2, self.config.cycle_max_period)
+        lags = range(1, max_lag)
+        
+        # Calculate autocorrelation for each lag
+        autocorr = [series.autocorr(lag=lag) for lag in lags]
+        autocorr = pd.Series(autocorr, index=lags)
+        
+        # Find peaks in autocorrelation
+        peaks, properties = signal.find_peaks(autocorr, height=0.1)
         
         return {
             'periodic_lengths': peaks,
-            'correlation_strength': autocorr[peaks]
+            'correlation_strength': autocorr[peaks],
+            'autocorrelation': autocorr  # Return full autocorrelation for visualization
         }
         
     def _analyze_phase(self, series: pd.Series) -> Dict:

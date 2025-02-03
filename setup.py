@@ -17,7 +17,6 @@ setup(
         'river>=0.8.0',           # For online learning
         'scipy>=1.7.0',
         'shap>=0.40.0',           # For feature importance
-        'pmdarima>=2.0.0',        # For automatic SARIMA
         'PyWavelets>=1.1.1',      # For wavelet analysis
         'nbformat>=4.2.0',        # For Plotly rendering in notebooks
         'ipywidgets>=7.0.0',      # For interactive widgets

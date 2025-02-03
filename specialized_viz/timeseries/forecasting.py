@@ -42,7 +42,7 @@ class ForecastConfig:
         'seasonality_prior_scale': 10,
         'holidays_prior_scale': 10
     })
-        forecast_horizon: int = 30
+    forecast_horizon: int = 30
     train_test_split: float = 0.8
     cv_folds: int = 5
     features_lag: List[int] = field(default_factory=lambda: [1, 7, 14, 30])
@@ -956,207 +956,329 @@ class TimeseriesForecasting:
             'model': nbeats
         }
     
-    def seasonal_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
-        """Forecast using seasonal decomposition and trend modeling (alternative to Prophet).
+    def _prepare_time_series(self, target: pd.Series) -> pd.Series:
+        """Prepare time series data with proper frequency information.
         
         Args:
-            features: Feature DataFrame
             target: Target series
             
         Returns:
-            Dictionary with forecast results
+            Series with proper datetime index, frequency, and no missing values
         """
+        # Ensure datetime index
+        if not isinstance(target.index, pd.DatetimeIndex):
+            target.index = pd.to_datetime(target.index)
+            
+        # Infer frequency if not set
+        if target.index.freq is None:
+            # Calculate most common frequency
+            freq = pd.infer_freq(target.index)
+            if freq is None:
+                # If can't infer, use business day for financial data
+                freq = 'B'
+            
+            # Reindex with proper frequency
+            target = target.asfreq(freq)
+
+        # Handle missing values
+        if target.isnull().any():
+            # Forward fill, then backward fill for any remaining NaNs
+            target = target.fillna(method='ffill').fillna(method='bfill')
+            
+            # If still have NaNs at the beginning or end, interpolate
+            if target.isnull().any():
+                target = target.interpolate(method='time').fillna(
+                    method='ffill').fillna(method='bfill')
+        
+        return target
+        
+    def _set_forecast_index(self, last_date: pd.Timestamp, steps: int) -> pd.DatetimeIndex:
+        """Create proper index for forecast values."""
+        freq = self._infer_or_get_frequency(last_date)
+        
+        # Handle different frequency types
+        if freq == 'B':
+            # For business days, use specific business day offset
+            from pandas.tseries.offsets import BusinessDay
+            return pd.date_range(
+                start=last_date + BusinessDay(1),
+                periods=steps,
+                freq='B'
+            )
+        else:
+            # For other frequencies, use standard date_range
+            freq_map = {
+                'D': '1D',
+                'W': '1W',
+                'M': '1M',
+                'Q': '1Q',
+                'Y': '1Y'
+            }
+            freq_str = freq_map.get(freq, '1D')  # Default to daily if unknown
+            return pd.date_range(
+                start=last_date + pd.Timedelta(freq_str),
+                periods=steps,
+                freq=freq
+            )
+
+    def _infer_or_get_frequency(self, date_index) -> str:
+        """Infer or get frequency from data."""
+        if isinstance(date_index, pd.DatetimeIndex):
+            if date_index.freq is not None:
+                return date_index.freq
+            freq = pd.infer_freq(date_index)
+            if freq is not None:
+                return freq
+            
+            # Try to determine frequency from intervals
+            if len(date_index) > 1:
+                interval = date_index[1] - date_index[0]
+                if interval.days == 1:
+                    if date_index[0].dayofweek < 5:  # Check if it's a weekday
+                        return 'B'
+                    return 'D'
+                elif interval.days == 7:
+                    return 'W'
+                elif 28 <= interval.days <= 31:
+                    return 'M'
+                elif 89 <= interval.days <= 92:
+                    return 'Q'
+        
+        # Default to daily frequency
+        return 'D'
+
+    def _process_train_data(self, target: pd.Series) -> pd.Series:
+        """Process training data for forecasting."""
+        # First prepare the time series
+        processed = target.copy()
+        
+        # Ensure datetime index
+        if not isinstance(processed.index, pd.DatetimeIndex):
+            processed.index = pd.to_datetime(processed.index)
+        
+        # Handle missing values
+        if processed.isnull().any():
+            processed = processed.ffill().bfill()
+            
+            # If still have NaNs, interpolate
+            if processed.isnull().any():
+                processed = processed.interpolate(method='time').ffill().bfill()
+        
+        # Set frequency
+        if processed.index.freq is None:
+            freq = self._infer_or_get_frequency(processed.index)
+            processed = processed.asfreq(freq)
+            # Fill any gaps created by resampling
+            processed = processed.ffill().bfill()
+        
+        return processed
+
+
+    def seasonal_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
+        """Forecast using seasonal decomposition and trend modeling."""
         from statsmodels.tsa.seasonal import seasonal_decompose
         from statsmodels.tsa.holtwinters import ExponentialSmoothing
+        from scipy import stats
+        
+        # Process the data
+        processed_target = self._process_train_data(target)
         
         # Perform seasonal decomposition
-        decomposition = seasonal_decompose(target, period=self.config.seasonal_periods[0])
+        decomposition = seasonal_decompose(
+            processed_target,
+            period=self.config.seasonal_periods[0],
+            extrapolate_trend='freq'
+        )
         
         # Forecast trend using Holt-Winters
         hw_model = ExponentialSmoothing(
-            target,
+            processed_target,
             seasonal_periods=self.config.seasonal_periods[0],
             trend='add',
             seasonal='add'
         ).fit()
         
-        # Generate forecasts
-        forecast = hw_model.forecast(self.config.forecast_horizon)
+        # Generate forecast dates
+        forecast_dates = pd.date_range(
+            start=processed_target.index[-1] + pd.DateOffset(1),
+            periods=self.config.forecast_horizon,
+            freq=processed_target.index.freq or 'B'
+        )
         
-        # Add prediction intervals
-        conf_int = hw_model.get_prediction(
-            start=len(target),
-            end=len(target) + self.config.forecast_horizon - 1
-        ).conf_int(alpha=0.05)
+        # Generate forecasts
+        forecast_values = hw_model.forecast(self.config.forecast_horizon)
+        forecast = pd.Series(forecast_values, index=forecast_dates)
+        
+        # Calculate prediction intervals
+        resid_std = np.std(hw_model.resid)
+        z_score = stats.norm.ppf(1 - (1 - self.config.confidence_level) / 2)
+        margin = z_score * resid_std
         
         return {
             'forecast': forecast,
-            'lower_bound': conf_int.iloc[:, 0],
-            'upper_bound': conf_int.iloc[:, 1],
+            'lower_bound': pd.Series(forecast - margin, index=forecast_dates),
+            'upper_bound': pd.Series(forecast + margin, index=forecast_dates),
             'components': {
                 'trend': decomposition.trend,
                 'seasonal': decomposition.seasonal,
                 'resid': decomposition.resid
-            }
+            },
+            'model': hw_model
         }
-
-    def sarima_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
-        """Forecast using SARIMA model.
         
-        Args:
-            features: Feature DataFrame
-            target: Target series
-            
-        Returns:
-            Dictionary with SARIMA forecast results
-        """
-        from statsmodels.tsa.statespace.sarimax import SARIMAX
-        from pmdarima import auto_arima
-        
-        # Automatically find best SARIMA parameters
-        auto_model = auto_arima(
-            target,
-            seasonal=True,
-            m=self.config.seasonal_periods[0],
-            suppress_warnings=True,
-            error_action="ignore",
-            max_p=5, max_q=5,
-            max_P=2, max_Q=2,
-            max_order=5,
-            max_d=2, max_D=1
-        )
-        
-        # Get best parameters
-        order = auto_model.order
-        seasonal_order = auto_model.seasonal_order
-        
-        # Fit SARIMA model
-        model = SARIMAX(
-            target,
-            order=order,
-            seasonal_order=seasonal_order
-        ).fit(disp=False)
-        
-        # Generate forecasts with confidence intervals
-        forecast = model.get_forecast(self.config.forecast_horizon)
-        
-        return {
-            'forecast': forecast.predicted_mean,
-            'lower_bound': forecast.conf_int().iloc[:, 0],
-            'upper_bound': forecast.conf_int().iloc[:, 1],
-            'model': model,
-            'order': order,
-            'seasonal_order': seasonal_order
-        }
-
     def ets_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
-        """Forecast using ETS (Error, Trend, Seasonal) model.
-        
-        Args:
-            features: Feature DataFrame
-            target: Target series
-            
-        Returns:
-            Dictionary with ETS forecast results
-        """
+        """Forecast using ETS (Error, Trend, Seasonal) model."""
         from statsmodels.tsa.holtwinters import ExponentialSmoothing
         
-        # Determine best ETS model type using cross-validation
-        ets_types = [
-            ('add', 'add'),
-            ('add', 'mul'),
-            ('mul', 'add'),
-            ('mul', 'mul')
+        # Process the data
+        processed_target = self._process_train_data(target)
+        
+        # Try different ETS models
+        best_aic = np.inf
+        best_model = None
+        best_forecast = None
+        best_params = None
+        
+        models_to_try = [
+            {'trend': 'add', 'seasonal': 'add'},
+            {'trend': 'add', 'seasonal': 'mul'},
+            {'trend': 'mul', 'seasonal': 'add'},
+            {'trend': 'mul', 'seasonal': 'mul'}
         ]
         
-        best_aic = float('inf')
-        best_model = None
-        best_type = None
-        
-        for trend, seasonal in ets_types:
+        for params in models_to_try:
             try:
                 model = ExponentialSmoothing(
-                    target,
-                    trend=trend,
-                    seasonal=seasonal,
-                    seasonal_periods=self.config.seasonal_periods[0]
+                    processed_target,
+                    seasonal_periods=self.config.seasonal_periods[0],
+                    **params
                 ).fit()
                 
                 if model.aic < best_aic:
                     best_aic = model.aic
                     best_model = model
-                    best_type = (trend, seasonal)
+                    best_params = params
             except:
                 continue
         
-        # Generate forecasts with the best model
-        forecast = best_model.forecast(self.config.forecast_horizon)
+        if best_model is None:
+            raise ValueError("Could not fit any ETS model to the data")
         
-        # Calculate prediction intervals using simulation
-        simulations = []
-        for _ in range(100):
-            sim = best_model.simulate(
-                nsimulations=self.config.forecast_horizon,
-                anchor=len(target)
-            )
-            simulations.append(sim)
+        # Generate forecast dates
+        forecast_dates = pd.date_range(
+            start=processed_target.index[-1] + pd.DateOffset(1),
+            periods=self.config.forecast_horizon,
+            freq=processed_target.index.freq or 'B'
+        )
         
-        # Calculate confidence intervals from simulations
-        simulations = np.array(simulations)
-        lower = np.percentile(simulations, 2.5, axis=0)
-        upper = np.percentile(simulations, 97.5, axis=0)
+        # Generate forecasts
+        forecast_values = best_model.forecast(self.config.forecast_horizon)
+        forecast = pd.Series(forecast_values, index=forecast_dates)
+        
+        # Calculate prediction intervals
+        from scipy import stats
+        resid_std = np.std(best_model.resid)
+        z_score = stats.norm.ppf(1 - (1 - self.config.confidence_level) / 2)
+        margin = z_score * resid_std
         
         return {
             'forecast': forecast,
-            'lower_bound': pd.Series(lower, index=forecast.index),
-            'upper_bound': pd.Series(upper, index=forecast.index),
+            'lower_bound': pd.Series(forecast - margin, index=forecast_dates),
+            'upper_bound': pd.Series(forecast + margin, index=forecast_dates),
             'model': best_model,
-            'model_type': best_type
+            'params': best_params,
+            'aic': best_aic
         }
-
-    def combined_seasonal_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
-        """Combine multiple seasonal forecasting methods.
         
-        Args:
-            features: Feature DataFrame
-            target: Target series
-            
-        Returns:
-            Dictionary with combined forecast results
-        """
+    def combined_seasonal_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
+        """Combine multiple seasonal forecasting methods."""
         # Get forecasts from different models
-        hw_result = self.seasonal_forecast(features, target)
-        sarima_result = self.sarima_forecast(features, target)
-        ets_result = self.ets_forecast(features, target)
+        results = {
+            'seasonal': self.seasonal_forecast(features, target),
+            'sarima': self.sarima_forecast(features, target),
+            'ets': self.ets_forecast(features, target)
+        }
         
         # Combine forecasts with equal weights
-        combined_forecast = (
-            hw_result['forecast'] +
-            sarima_result['forecast'] +
-            ets_result['forecast']
-        ) / 3
+        forecasts = pd.DataFrame({
+            name: result['forecast']
+            for name, result in results.items()
+        })
+        
+        combined_forecast = forecasts.mean(axis=1)
         
         # Calculate combined confidence intervals
-        lower_bound = (
-            hw_result['lower_bound'] +
-            sarima_result['lower_bound'] +
-            ets_result['lower_bound']
-        ) / 3
+        lower_bounds = pd.DataFrame({
+            name: result['lower_bound']
+            for name, result in results.items()
+        })
         
-        upper_bound = (
-            hw_result['upper_bound'] +
-            sarima_result['upper_bound'] +
-            ets_result['upper_bound']
-        ) / 3
+        upper_bounds = pd.DataFrame({
+            name: result['upper_bound']
+            for name, result in results.items()
+        })
         
         return {
             'forecast': combined_forecast,
-            'lower_bound': lower_bound,
-            'upper_bound': upper_bound,
+            'lower_bound': lower_bounds.mean(axis=1),
+            'upper_bound': upper_bounds.mean(axis=1),
             'component_forecasts': {
-                'hw': hw_result['forecast'],
-                'sarima': sarima_result['forecast'],
-                'ets': ets_result['forecast']
+                name: result['forecast']
+                for name, result in results.items()
             },
-            'decomposition': hw_result['components']
+            'models': {
+                name: result['model']
+                for name, result in results.items()
+            }
+        }
+        
+    def sarima_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
+        """Forecast using SARIMA model."""
+        from statsmodels.tsa.statespace.sarimax import SARIMAX
+        
+        # Process the data
+        processed_target = self._process_train_data(target)
+        freq = self._infer_or_get_frequency(processed_target.index)
+        
+        # Set default SARIMA parameters
+        order = (1, 1, 1)  # (p, d, q)
+        seasonal_order = (1, 1, 1, self.config.seasonal_periods[0])  # (P, D, Q, s)
+        
+        # Create and fit SARIMA model
+        model = SARIMAX(
+            processed_target,
+            order=order,
+            seasonal_order=seasonal_order,
+            enforce_stationarity=False,
+            enforce_invertibility=False,
+            freq=freq  # Explicitly set frequency
+        )
+        
+        results = model.fit(disp=False)
+        
+        # Generate forecasts with proper index
+        forecast_index = self._set_forecast_index(
+            processed_target.index[-1],
+            self.config.forecast_horizon
+        )
+        
+        forecast = pd.Series(
+            results.forecast(self.config.forecast_horizon),
+            index=forecast_index
+        )
+        
+        # Get prediction intervals with proper index
+        forecast_obj = results.get_forecast(self.config.forecast_horizon)
+        conf_int = forecast_obj.conf_int(alpha=1-self.config.confidence_level)
+        conf_int.index = forecast_index
+        
+        return {
+            'forecast': forecast,
+            'lower_bound': conf_int.iloc[:, 0],
+            'upper_bound': conf_int.iloc[:, 1],
+            'model': results,
+            'order': order,
+            'seasonal_order': seasonal_order,
+            'aic': results.aic,
+            'bic': results.bic
         }

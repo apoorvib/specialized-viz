@@ -1,9 +1,9 @@
 # Specialized Data Visualization Library
 
 ```
-[![PyPI](https://img.shields.io/pypi/v/specialized-viz)](https://pypi.org/project/specialized-viz/)
-[![Python](https://img.shields.io/pypi/pyversions/specialized-viz)](https://pypi.org/project/specialized-viz/)
-[![License](https://img.shields.io/pypi/l/specialized-viz)](https://opensource.org/licenses/MIT)
+[![PyPI version](https://badge.fury.io/py/specialized-viz.svg)](https://badge.fury.io/py/specialized-viz)
+[![Python](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/license-MIT-green)](https://opensource.org/licenses/MIT)
 ```
 
 A comprehensive Python library for financial technical analysis and visualization, specializing in candlestick patterns, market regime detection, time series analysis, and interactive analysis tools.
@@ -30,6 +30,8 @@ A comprehensive Python library for financial technical analysis and visualizatio
 - [License](#license)
 - [Support](#support)
 
+
+
 ## Features
 
 ### 1. Candlestick Pattern Detection
@@ -48,7 +50,35 @@ A comprehensive Python library for financial technical analysis and visualizatio
   - Gartley
   - Butterfly
   - Bat
-- **Multi-timeframe Patterns**
+- Multi-timeframe Patterns
+  - Pattern consistency across timeframes
+  - Timeframe correlation analysis
+  - Hierarchical pattern detection
+  - Cross-timeframe confirmation
+
+#### Multi-timeframe Analysis
+
+- Time Aggregation
+  - Minute (1m, 5m, 15m, 30m)
+  - Hourly (1h, 2h, 4h)
+  - Daily (1D)
+  - Weekly (1W)
+  - Monthly (1M)
+- Pattern Verification
+  - Cross-timeframe pattern validation
+  - Higher timeframe trend alignment
+  - Lower timeframe entry signals
+  - Volume profile across timeframes
+- Market Structure
+  - Higher timeframe support/resistance
+  - Multi-timeframe momentum analysis
+  - Trend strength across timeframes
+  - Breakout confirmation
+- Analysis Tools
+  - Timeframe correlation matrix
+  - Multi-timeframe momentum indicators
+  - Volume analysis across timeframes
+  - Volatility comparison
 
 #### Pattern Analysis
 

@@ -1,190 +1,197 @@
 # Specialized Data Visualization Library
 
-A comprehensive Python library for financial technical analysis and visualization, specializing in candlestick patterns, market regime detection, time series analysis, and interactive analysis tools.
+A comprehensive Python library for financial data analysis and visualization, offering advanced time series analysis, forecasting, pattern detection, and interactive visualization tools.
 
-![PyPI version](https://img.shields.io/pypi/v/specialized-viz)
-![Python versions](https://img.shields.io/pypi/pyversions/specialized-viz)
-![License](https://img.shields.io/github/license/apoorvib/specialized-viz)
-
-## Table of Contents
-- [Features](#features)
-- [Installation](#installation)
-- [Quick Start](#quick-start)
-- [Usage Guide](#usage-guide)
-- [Modules](#modules)
-- [API Reference](#api-reference)
-- [Best Practices](#best-practices)
-- [Contributing](#contributing)
-- [License](#license)
-- [Support](#support)
+```
+[![PyPI](https://img.shields.io/pypi/v/specialized-viz)](https://pypi.org/project/specialized-viz/)
+[![Python](https://img.shields.io/pypi/pyversions/specialized-viz)](https://pypi.org/project/specialized-viz/)
+[![License](https://img.shields.io/pypi/l/specialized-viz)](https://opensource.org/licenses/MIT)
+```
 
 ## Features
 
-### 1. Candlestick Pattern Detection
-- Multiple pattern types supported:
-  - Basic patterns (Doji, Hammer, Engulfing)
-  - Complex patterns (Three Line Strike, Abandoned Baby)
-  - Harmonic patterns (Gartley, Butterfly, Bat)
-  - Multi-timeframe patterns
-- Automatic pattern recognition with configurable parameters
-- Pattern reliability metrics and statistical validation
+### 1. Time Series Analysis & Forecasting
 
-### 2. Market Regime Analysis
-- Volatility regime detection
-- Trend identification
-- Volume analysis
-- Combined regime classification
-- Momentum and market state analysis
+#### Multiple Forecasting Models
 
-### 3. Time Series Analysis & Forecasting
-- Multiple Forecasting Models:
-  - Traditional Methods:
-    - ARIMA/SARIMA
-    - Exponential Smoothing
-    - Linear/Ridge/Lasso Regression
-  - Advanced Models:
-    - Prophet (Facebook's forecasting tool)
-    - VAR (Vector Autoregression)
-    - LSTM Neural Networks
-    - N-BEATS Neural Network
-  - Ensemble Methods:
-    - Random Forest
-    - Gradient Boosting
-    - Model Combination with Optimal Weights
-- Feature Engineering:
-  - Automatic lag feature creation
-  - Rolling statistics
-  - Calendar features
-  - Cyclical encoding
-- Forecast Evaluation:
-  - Multiple error metrics
-  - Cross-validation
-  - Directional accuracy
-  - Scale-independent metrics
+- Traditional Methods
+  - SARIMA (Seasonal ARIMA)
+  - ETS (Error, Trend, Seasonal)
+  - Combined Forecasting Approaches
+- Advanced Models
+  - Prophet (Facebook's forecasting tool)
+  - VAR (Vector Autoregression)
+  - LSTM Neural Networks
+  - N-BEATS Neural Network
+- Ensemble Methods
+  - Random Forest
+  - Gradient Boosting
+  - Weighted Model Combination
 
-### 4. Interactive Visualization
-- Customizable candlestick charts
-- Pattern overlays and annotations
-- Multi-timeframe views
-- Volume analysis
-- Pattern clustering visualization
-- Interactive pattern filtering
+#### Feature Engineering
+
+- Automatic lag feature creation
+- Rolling statistics (mean, std, min, max)
+- Calendar features
+- Cyclical encoding
+- Interaction features
+
+#### Analysis Capabilities
+
+- Seasonality detection
+- Change point detection
+- Anomaly detection
+- Regime analysis
+- Online learning adaptation
+
+### 2. Interactive Visualization
+
+- Comprehensive dashboards
+- Time series decomposition plots
+- Pattern analysis visualization
+- Feature importance plots
+- Forecast comparison charts
 
 ## Installation
 
 ### Prerequisites
-- Python 3.7+
+
+- Python 3.8+
 - pip package manager
 
-### Basic Installation
-```bash
+```
+bash
+
+Copy
+
+# Basic installation
 pip install specialized-viz
-```
 
-### Full Installation (with all forecasting models)
-```bash
+# Full installation with all models
 pip install specialized-viz[all]
-```
-
-Note: Some models like Prophet require additional system dependencies. For Ubuntu/Debian:
-```bash
-sudo apt-get update
-sudo apt-get install python3-dev gcc
 ```
 
 ## Quick Start
 
-```python
-from specialized_viz import CandlestickVisualizer, TimeseriesForecasting
-import yfinance as yf
+```
+python
 
-# Get sample data
-data = yf.download('AAPL', start='2023-01-01')
+Copy
 
-# Candlestick Analysis
-viz = CandlestickVisualizer(data)
-patterns = viz.create_candlestick_chart()
-patterns.show()
+from specialized_viz.timeseries import (
+    TimeseriesAnalysis,
+    TimeseriesConfig,
+    TimeseriesVisualizer,
+    TimeseriesForecasting
+)
 
-# Time Series Forecasting
-ts = TimeseriesForecasting(data)
-forecast = ts.prophet_forecast(target=data['Close'])
-forecast.show()
+# Load data
+data = pd.read_csv('your_data.csv', index_col='date', parse_dates=True)
+
+# Initialize components
+config = TimeseriesConfig(
+    decomposition_method='additive',
+    seasonal_periods=[5, 21, 63, 252]  # Daily, Weekly, Monthly, Yearly
+)
+analyzer = TimeseriesAnalysis(data, config)
+viz = TimeseriesVisualizer(analyzer)
+forecaster = TimeseriesForecasting(data)
+
+# Basic analysis
+decomp_fig = viz.plot_decomposition('value')
+decomp_fig.show()
+
+# Create forecast
+features = forecaster.create_features('value')
+forecast = forecaster.seasonal_forecast(features, data['value'])
 ```
 
-## Usage Guide
+## Core Modules
 
-### Basic Time Series Analysis
-```python
-from specialized_viz import TimeseriesForecasting
+### 1. TimeseriesAnalysis
 
-# Initialize forecaster
-ts = TimeseriesForecasting(data)
+- Time series decomposition
+- Pattern detection
+- Seasonality analysis
+- Change point detection
 
-# Create features
-features = ts.create_features(column='Close')
+### 2. TimeseriesVisualizer
 
-# Train ensemble model
-ensemble_result = ts.ensemble_forecast(features, data['Close'])
+- Interactive dashboards
+- Correlation analysis
+- Distribution evolution
+- Feature importance visualization
 
-# Generate probabilistic forecast
-prob_forecast = ts.probabilistic_forecast(features, data['Close'])
+### 3. TimeseriesForecasting
+
+- Multiple forecasting models
+- Feature engineering
+- Model evaluation
+- Online learning
+
+## Advanced Usage
+
+### 1. Comprehensive Analysis
+
+```
+python
+
+Copy
+
+# Create comprehensive dashboard
+dashboard = viz.create_comprehensive_dashboard('value')
+dashboard.show()
+
+# Analyze patterns
+patterns = analyzer.analyze_seasonality('value')
+cycles = analyzer.analyze_cycles('value')
 ```
 
-### Advanced Forecasting Models
-```python
-# Prophet Model
-prophet_forecast = ts.prophet_forecast(features, data['Close'])
+### 2. Advanced Forecasting
 
-# LSTM Neural Network
-lstm_forecast = ts.lstm_forecast(features, data['Close'])
+```
+python
 
-# N-BEATS Model
-nbeats_forecast = ts.nbeats_forecast(features, data['Close'])
+Copy
 
-# Vector Autoregression
-var_forecast = ts.var_forecast(features, data['Close'])
+# Combined seasonal forecast
+result = forecaster.combined_seasonal_forecast(features, target)
+
+# Online learning with drift detection
+forecaster.online_learning(features, target, window_size=63)
 ```
 
 ## Best Practices
 
-### 1. Data Preparation
-- Ensure your data includes OHLCV columns
-- Clean missing values
-- Use appropriate timeframe data
-
-### 2. Model Selection
-- Start with simple models (ensemble of traditional methods)
-- Use Prophet for data with strong seasonality
-- Consider LSTM/N-BEATS for complex patterns
-- Use VAR for multivariate analysis
-
-### 3. Feature Engineering
-- Include domain-specific features
-- Consider multiple time horizons
-- Test feature importance
-- Remove highly correlated features
-
-### 4. Model Evaluation
-- Use multiple error metrics
-- Consider computational requirements
-- Validate on recent data
-- Monitor prediction intervals
+1. Data Preparation
+   - Ensure datetime index
+   - Handle missing values
+   - Use appropriate frequency
+2. Model Selection
+   - Use seasonal models for periodic data
+   - Consider ensemble methods for complex patterns
+   - Implement online learning for streaming data
+3. Performance Optimization
+   - Monitor memory usage
+   - Use appropriate window sizes
+   - Implement data downsampling when needed
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit pull requests.
+We welcome contributions! Please follow these steps:
 
 1. Fork the repository
-2. Create your feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
+2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes (`git commit -m 'Add AmazingFeature'`)
+4. Push to the branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License - see the <LICENSE> file for details.
 
 ## Support
 
-For issues and feature requests, please use the GitHub issue tracker.
+- Documentation: <docs/>
+- Issues: [GitHub Issues](https://github.com/username/specialized-viz/issues)
+- Examples: <examples/>

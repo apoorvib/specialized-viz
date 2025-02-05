@@ -1,16 +1,72 @@
 # Specialized Data Visualization Library
 
-A comprehensive Python library for financial data analysis and visualization, offering advanced time series analysis, forecasting, pattern detection, and interactive visualization tools.
-
 ```
 [![PyPI](https://img.shields.io/pypi/v/specialized-viz)](https://pypi.org/project/specialized-viz/)
 [![Python](https://img.shields.io/pypi/pyversions/specialized-viz)](https://pypi.org/project/specialized-viz/)
 [![License](https://img.shields.io/pypi/l/specialized-viz)](https://opensource.org/licenses/MIT)
 ```
 
+A comprehensive Python library for financial technical analysis and visualization, specializing in candlestick patterns, market regime detection, time series analysis, and interactive analysis tools.
+
+## Table of Contents
+
+- Features
+  - [Candlestick Pattern Detection](#1-candlestick-pattern-detection)
+  - [Market Regime Analysis](#2-market-regime-analysis)
+  - [Time Series Analysis & Forecasting](#3-time-series-analysis--forecasting)
+  - [Interactive Visualization](#4-interactive-visualization)
+- Installation
+  - [Prerequisites](#prerequisites)
+- Quick Start
+  - [Candlestick Analysis](#candlestick-analysis)
+  - [Time Series Analysis](#time-series-analysis)
+- Core Modules
+  - [Candlestick Analysis](#1-candlestick-analysis)
+  - [TimeseriesAnalysis](#2-timeseriesanalysis)
+  - [TimeseriesVisualizer](#3-timeseriesvisualizer)
+  - [TimeseriesForecasting](#4-timeseriesforecasting)
+- [Best Practices](#best-practices)
+- [Contributing](#contributing)
+- [License](#license)
+- [Support](#support)
+
 ## Features
 
-### 1. Time Series Analysis & Forecasting
+### 1. Candlestick Pattern Detection
+
+#### Pattern Types
+
+- Basic Patterns
+  - Doji, Hammer, Engulfing
+  - Morning/Evening Star
+  - Marubozu
+- Complex Patterns
+  - Three Line Strike
+  - Abandoned Baby
+  - Rising/Falling Three Methods
+- Harmonic Patterns
+  - Gartley
+  - Butterfly
+  - Bat
+- **Multi-timeframe Patterns**
+
+#### Pattern Analysis
+
+- Automatic pattern recognition
+- Configurable parameters
+- Pattern reliability metrics
+- Statistical validation
+- Pattern clustering
+
+### 2. Market Regime Analysis
+
+- Volatility regime detection
+- Trend identification
+- Volume analysis
+- Combined regime classification
+- Momentum and market state analysis
+
+### 3. Time Series Analysis & Forecasting
 
 #### Multiple Forecasting Models
 
@@ -19,7 +75,7 @@ A comprehensive Python library for financial data analysis and visualization, of
   - ETS (Error, Trend, Seasonal)
   - Combined Forecasting Approaches
 - Advanced Models
-  - Prophet (Facebook's forecasting tool)
+  - Prophet
   - VAR (Vector Autoregression)
   - LSTM Neural Networks
   - N-BEATS Neural Network
@@ -31,26 +87,22 @@ A comprehensive Python library for financial data analysis and visualization, of
 #### Feature Engineering
 
 - Automatic lag feature creation
-- Rolling statistics (mean, std, min, max)
+- Rolling statistics
 - Calendar features
 - Cyclical encoding
 - Interaction features
 
-#### Analysis Capabilities
+### 4. Interactive Visualization
 
-- Seasonality detection
-- Change point detection
-- Anomaly detection
-- Regime analysis
-- Online learning adaptation
-
-### 2. Interactive Visualization
-
+- Customizable candlestick charts
+- Pattern overlays and annotations
+- Multi-timeframe views
+- Volume analysis
+- Pattern clustering visualization
+- Interactive pattern filtering
 - Comprehensive dashboards
 - Time series decomposition plots
-- Pattern analysis visualization
-- Feature importance plots
-- Forecast comparison charts
+- Feature importance visualization
 
 ## Installation
 
@@ -73,6 +125,30 @@ pip install specialized-viz[all]
 
 ## Quick Start
 
+### Candlestick Analysis
+
+```
+python
+
+Copy
+
+from specialized_viz import CandlestickVisualizer
+import yfinance as yf
+
+# Get sample data
+data = yf.download('AAPL', start='2023-01-01')
+
+# Initialize visualizer
+viz = CandlestickVisualizer(data)
+
+# Detect and visualize patterns
+patterns = viz.detect_patterns()
+chart = viz.create_candlestick_chart(patterns=patterns)
+chart.show()
+```
+
+### Time Series Analysis
+
 ```
 python
 
@@ -85,93 +161,70 @@ from specialized_viz.timeseries import (
     TimeseriesForecasting
 )
 
-# Load data
-data = pd.read_csv('your_data.csv', index_col='date', parse_dates=True)
-
 # Initialize components
 config = TimeseriesConfig(
     decomposition_method='additive',
-    seasonal_periods=[5, 21, 63, 252]  # Daily, Weekly, Monthly, Yearly
+    seasonal_periods=[5, 21, 63, 252]
 )
 analyzer = TimeseriesAnalysis(data, config)
 viz = TimeseriesVisualizer(analyzer)
 forecaster = TimeseriesForecasting(data)
 
 # Basic analysis
-decomp_fig = viz.plot_decomposition('value')
+decomp_fig = viz.plot_decomposition('Close')
 decomp_fig.show()
 
 # Create forecast
-features = forecaster.create_features('value')
-forecast = forecaster.seasonal_forecast(features, data['value'])
+features = forecaster.create_features('Close')
+forecast = forecaster.seasonal_forecast(features, data['Close'])
 ```
 
 ## Core Modules
 
-### 1. TimeseriesAnalysis
+### 1. Candlestick Analysis
+
+- Pattern detection and classification
+- Market regime identification
+- Technical indicator calculation
+- Pattern reliability analysis
+
+### 2. TimeseriesAnalysis
 
 - Time series decomposition
 - Pattern detection
 - Seasonality analysis
 - Change point detection
 
-### 2. TimeseriesVisualizer
+### 3. TimeseriesVisualizer
 
 - Interactive dashboards
 - Correlation analysis
 - Distribution evolution
 - Feature importance visualization
 
-### 3. TimeseriesForecasting
+### 4. TimeseriesForecasting
 
 - Multiple forecasting models
 - Feature engineering
 - Model evaluation
 - Online learning
 
-## Advanced Usage
-
-### 1. Comprehensive Analysis
-
-```
-python
-
-Copy
-
-# Create comprehensive dashboard
-dashboard = viz.create_comprehensive_dashboard('value')
-dashboard.show()
-
-# Analyze patterns
-patterns = analyzer.analyze_seasonality('value')
-cycles = analyzer.analyze_cycles('value')
-```
-
-### 2. Advanced Forecasting
-
-```
-python
-
-Copy
-
-# Combined seasonal forecast
-result = forecaster.combined_seasonal_forecast(features, target)
-
-# Online learning with drift detection
-forecaster.online_learning(features, target, window_size=63)
-```
-
 ## Best Practices
 
 1. Data Preparation
+   - Use OHLCV data for candlestick analysis
    - Ensure datetime index
    - Handle missing values
-   - Use appropriate frequency
-2. Model Selection
+   - Use appropriate timeframes
+2. Pattern Detection
+   - Configure pattern parameters based on timeframe
+   - Validate patterns with multiple indicators
+   - Consider volume confirmation
+3. Model Selection
    - Use seasonal models for periodic data
    - Consider ensemble methods for complex patterns
    - Implement online learning for streaming data
-3. Performance Optimization
+4. Performance Optimization
    - Monitor memory usage
    - Use appropriate window sizes
    - Implement data downsampling when needed

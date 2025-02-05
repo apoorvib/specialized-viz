@@ -1,10 +1,8 @@
 # Specialized Data Visualization Library
 
-```
-[![PyPI version](https://badge.fury.io/py/specialized-viz.svg)](https://badge.fury.io/py/specialized-viz)
+[![PyPI](https://img.shields.io/pypi/v/specialized-viz?color=blue)](https://pypi.org/project/specialized-viz)
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/license-MIT-green)](https://opensource.org/licenses/MIT)
-```
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
 A comprehensive Python library for financial technical analysis and visualization, specializing in candlestick patterns, market regime detection, time series analysis, and interactive analysis tools.
 

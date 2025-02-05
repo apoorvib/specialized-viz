@@ -303,15 +303,13 @@ class TimeseriesForecasting:
         }
 
     def online_learning(self, features: pd.DataFrame, target: pd.Series,
-                       window_size: int = 100) -> None:
-        """Implement online learning with concept drift detection.
-        
-        Args:
-            features: Feature DataFrame
-            target: Target series
-            window_size: Size of rolling window for updating
-        """
+                    window_size: int = 100) -> None:
+        """Implement online learning with concept drift detection and handle missing values."""
         from river import drift
+        from sklearn.ensemble import GradientBoostingRegressor
+        from sklearn.impute import SimpleImputer
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
         
         # Initialize drift detector
         drift_detector = drift.ADWIN()
@@ -319,40 +317,115 @@ class TimeseriesForecasting:
         # Initialize metrics tracker
         performance_log = []
         
+        # Get consistent features list - exclude rolling_90 features
+        exclude_cols = [col for col in features.columns if '90' in col]
+        initial_features = [col for col in features.columns if col not in exclude_cols]
+        
         # Sliding window update
         for i in range(window_size, len(features), window_size):
-            # Get window data
-            X_window = features.iloc[i-window_size:i]
-            y_window = target.iloc[i-window_size:i]
-            
-            # Train model on window
-            model = GradientBoostingRegressor(random_state=42)
-            model.fit(X_window, y_window)
-            
-            # Make prediction and update drift detector
-            pred = model.predict(features.iloc[i:i+1])
-            actual = target.iloc[i]
-            error = abs(actual - pred[0])
-            
-            drift_detector.update(error)
-            
-            # Check for concept drift
-            if drift_detector.change_detected:
-                print(f"Concept drift detected at index {i}")
-                # Retrain model on recent data
-                X_recent = features.iloc[i-window_size//2:i]
-                y_recent = target.iloc[i-window_size//2:i]
-                model.fit(X_recent, y_recent)
-            
-            # Log performance
-            performance_log.append({
-                'index': i,
-                'error': error,
-                'drift_detected': drift_detector.change_detected
-            })
+            try:
+                # Get window data with consistent features
+                X_window = features.iloc[i-window_size:i][initial_features]
+                y_window = target.iloc[i-window_size:i]
+                
+                # Handle missing values
+                imputer = SimpleImputer(strategy='constant', fill_value=0)
+                X_window_imputed = pd.DataFrame(
+                    imputer.fit_transform(X_window),
+                    columns=X_window.columns,
+                    index=X_window.index
+                )
+                
+                # Train model on window
+                model = GradientBoostingRegressor(random_state=42)
+                model.fit(X_window_imputed, y_window)
+                
+                # Prepare next features for prediction
+                X_next = features.iloc[i:i+1][initial_features]
+                X_next_imputed = pd.DataFrame(
+                    imputer.transform(X_next),
+                    columns=X_next.columns,
+                    index=X_next.index
+                )
+                
+                # Make prediction and update drift detector
+                pred = model.predict(X_next_imputed)
+                actual = target.iloc[i]
+                error = abs(actual - pred[0])
+                
+                # Update drift detector and get warning level
+                drift_detector.update(error)
+                drift_level = drift_detector.width if hasattr(drift_detector, 'width') else 0
+                
+                # Log performance
+                performance_log.append({
+                    'index': target.index[i],
+                    'actual': actual,
+                    'predicted': pred[0],
+                    'error': error,
+                    'drift_level': drift_level
+                })
+                
+            except Exception as e:
+                print(f"Error at index {i}: {str(e)}")
+                continue
         
-        self.online_performance = pd.DataFrame(performance_log)
-
+        # Create performance DataFrame
+        if performance_log:
+            self.online_performance = pd.DataFrame(performance_log).set_index('index')
+            
+            # Create visualization
+            fig = make_subplots(rows=2, cols=1,
+                            subplot_titles=('Actual vs Predicted', 'Error and Drift Level'),
+                            shared_xaxes=True)
+            
+            # Plot actual vs predicted
+            fig.add_trace(
+                go.Scatter(x=self.online_performance.index, 
+                        y=self.online_performance['actual'],
+                        name='Actual',
+                        line=dict(color='blue')),
+                row=1, col=1
+            )
+            
+            fig.add_trace(
+                go.Scatter(x=self.online_performance.index, 
+                        y=self.online_performance['predicted'],
+                        name='Predicted',
+                        line=dict(color='red', dash='dash')),
+                row=1, col=1
+            )
+            
+            # Plot error and drift level
+            fig.add_trace(
+                go.Scatter(x=self.online_performance.index,
+                        y=self.online_performance['error'],
+                        name='Error',
+                        line=dict(color='orange')),
+                row=2, col=1
+            )
+            
+            fig.add_trace(
+                go.Scatter(x=self.online_performance.index,
+                        y=self.online_performance['drift_level'],
+                        name='Drift Level',
+                        line=dict(color='purple', dash='dot')),
+                row=2, col=1
+            )
+            
+            fig.update_layout(
+                height=800,
+                title_text="Online Learning Performance",
+                showlegend=True
+            )
+            
+            self.performance_plot = fig
+            fig.show()
+            
+        else:
+            print("Warning: No performance data was collected.")
+            self.online_performance = pd.DataFrame()
+        
     def cross_validate(self, features: pd.DataFrame, target: pd.Series,
                       n_splits: int = None) -> Dict[str, float]:
         """Perform time series cross-validation.

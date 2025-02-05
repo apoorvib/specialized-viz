@@ -197,27 +197,18 @@ class TimeseriesVisualizer:
         return fig
         
     def create_animation(self, column: str) -> go.Figure:
-        """Create animated visualizations.
+        from sklearn.linear_model import LinearRegression
         
-        Args:
-            column: Name of the column to analyze
-            
-        Returns:
-            Plotly figure with animation frames
-        """
         series = self.analyzer.data[column]
-        
-        # Create frames for animation
         frames = []
-        window_size = len(series) // 10  # 10 frames
-        
-        for i in range(0, len(series) - window_size, window_size // 2):
+        window_size = len(series) // 10
+
+        # Create frames
+        for i in range(0, len(series) - window_size, window_size // 4):
             window = series.iloc[i:i+window_size]
             
-            # Trend analysis for window
             X = np.arange(len(window)).reshape(-1, 1)
             y = window.values.reshape(-1, 1)
-            from sklearn.linear_model import LinearRegression
             model = LinearRegression()
             model.fit(X, y)
             trend = model.predict(X)
@@ -240,14 +231,14 @@ class TimeseriesVisualizer:
                 name=f'frame{i}'
             )
             frames.append(frame)
-            
+                
         # Create base figure
         fig = go.Figure(
             data=frames[0].data,
-            frames=frames,
+            frames=frames
         )
         
-        # Add slider and play button
+        # Add animation controls
         fig.update_layout(
             updatemenus=[{
                 'type': 'buttons',
@@ -261,17 +252,10 @@ class TimeseriesVisualizer:
                         'transition': {'duration': 300}
                     }]
                 }]
-            }],
-            sliders=[{
-                'currentvalue': {'prefix': 'Frame: '},
-                'steps': [{'args': [[f.name], {'mode': 'immediate'}],
-                          'label': str(k),
-                          'method': 'animate'} for k, f in enumerate(frames)]
             }]
         )
         
-        return fig
-        
+        return fig  # Add this return statement            
     def plot_feature_importance(self, 
                               features: pd.DataFrame,
                               target: pd.Series) -> go.Figure:
@@ -284,6 +268,8 @@ class TimeseriesVisualizer:
         Returns:
             Plotly figure with feature importance analysis
         """
+        from sklearn.metrics import mean_squared_error  # Add this import
+        from sklearn.linear_model import LinearRegression
         fig = make_subplots(
             rows=2, cols=2,
             subplot_titles=(
@@ -429,10 +415,12 @@ class TimeseriesVisualizer:
         
         # 3. Seasonality Analysis
         seasonality = self.analyzer.analyze_seasonality(column)
-        seasonal_strength = pd.Series(seasonality['seasonal_strength_12'])
+        first_period = self.analyzer.config.seasonal_periods[0]  # Use first configured period
+        seasonal_strength = pd.Series(seasonality[f'seasonal_strength_{first_period}'])
+
         fig.add_trace(
             go.Bar(x=seasonal_strength.index, y=seasonal_strength.values,
-                  name='Seasonal Strength'),
+                name='Seasonal Strength'),
             row=1, col=3
         )
         
@@ -469,7 +457,9 @@ class TimeseriesVisualizer:
         )
         
         # 7. Correlation Analysis
-        autocorr = pd.Series(series).autocorr(lag=None)
+        lags = 10
+        autocorr = [pd.Series(series).autocorr(lag=i) for i in range(1, lags+1)]
+
         fig.add_trace(
             go.Bar(x=np.arange(len(autocorr)), y=autocorr,
                   name='Autocorrelation'),

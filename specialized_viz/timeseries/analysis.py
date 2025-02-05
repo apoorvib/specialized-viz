@@ -42,6 +42,7 @@ class TimeseriesConfig:
     lstm_units: int = 50
     lstm_epochs: int = 100
     cycle_max_period: int = 252  # Default to one trading year
+    anomaly_threshold: float = 0.1
         
 class TimeseriesAnalysis:
     """Enhanced class for time series analysis operations."""
@@ -261,11 +262,10 @@ class TimeseriesAnalysis:
     def _wavelet_analysis(self, series: pd.Series) -> Dict:
         """Perform wavelet analysis."""
         # Use continuous wavelet transform
-        wavelet = 'cmor'
+        wavelet = 'cmor1.0-0.5'  # Explicit parameters instead of just 'cmor'
         scales = np.arange(1, min(len(series) // 2, self.config.cycle_max_period))
-        
         coefficients, frequencies = pywt.cwt(series.values, scales, wavelet)
-        
+
         # Find dominant scales
         power = np.sum(np.abs(coefficients), axis=1)
         dominant_scales = scales[np.argsort(power)[-5:]]  # Top 5 scales

@@ -1102,7 +1102,259 @@ class NetworkVisualizerExtension(NetworkVisualizer):
             return 'Core'
         else:
             return 'Peripheral'
-
+    
     def _calculate_pattern_sequences(self, pattern_metrics: Dict) -> pd.DataFrame:
-        """Calculate pattern sequence probabilities."""
-        sequences
+        """Calculate pattern sequence probabilities.
+        
+        Args:
+            pattern_metrics: Dictionary of pattern metrics over time
+            
+        Returns:
+            DataFrame: Transition probabilities between patterns
+        """
+        # Initialize transition matrix
+        patterns = list(pattern_metrics.keys())
+        transitions = pd.DataFrame(0.0, index=patterns, columns=patterns)
+        
+        # Calculate transitions
+        for i in range(len(patterns)):
+            pattern1 = patterns[i]
+            signal1 = pattern_metrics[pattern1]['signal'] > 0
+            
+            for j in range(len(patterns)):
+                pattern2 = patterns[j]
+                signal2 = pattern_metrics[pattern2]['signal'] > 0
+                
+                # Count transitions from pattern1 to pattern2
+                transitions.loc[pattern1, pattern2] = np.sum(
+                    signal1[:-1] & signal2[1:]
+                ) / max(1, np.sum(signal1[:-1]))
+                
+        return transitions
+
+    def create_pattern_forecast(self, pattern_type: str, horizon: int = 30) -> go.Figure:
+        """Create pattern occurrence forecast visualization.
+        
+        Args:
+            pattern_type: Type of pattern to forecast
+            horizon: Number of periods to forecast
+            
+        Returns:
+            go.Figure: Pattern forecast visualization
+        """
+        if not self.pattern_integration:
+            raise ValueError("Pattern integration required")
+            
+        fig = make_subplots(
+            rows=2, cols=2,
+            subplot_titles=(
+                'Pattern Occurrence Forecast',
+                'Forecast Confidence',
+                'Contributing Factors',
+                'Historical Performance'
+            )
+        )
+        
+        # Get historical pattern data
+        pattern_metrics = self.pattern_integration.analyze_pattern_propagation(pattern_type)
+        
+        # Create forecast using pattern metrics
+        forecast, confidence = self._forecast_pattern_occurrence(
+            pattern_metrics, horizon
+        )
+        
+        # 1. Pattern Occurrence Forecast
+        fig.add_trace(
+            go.Scatter(
+                x=pattern_metrics.index,
+                y=pattern_metrics['global_concentration'],
+                name='Historical',
+                line=dict(color=self.config.color_scheme['primary'])
+            ),
+            row=1, col=1
+        )
+        
+        fig.add_trace(
+            go.Scatter(
+                x=forecast.index,
+                y=forecast,
+                name='Forecast',
+                line=dict(color=self.config.color_scheme['secondary'])
+            ),
+            row=1, col=1
+        )
+        
+        # Add confidence intervals
+        fig.add_trace(
+            go.Scatter(
+                x=forecast.index,
+                y=forecast + confidence,
+                line=dict(width=0),
+                showlegend=False
+            ),
+            row=1, col=1
+        )
+        
+        fig.add_trace(
+            go.Scatter(
+                x=forecast.index,
+                y=forecast - confidence,
+                fill='tonexty',
+                line=dict(width=0),
+                name='Confidence Interval'
+            ),
+            row=1, col=1
+        )
+        
+        # 2. Forecast Confidence
+        fig.add_trace(
+            go.Scatter(
+                x=forecast.index,
+                y=confidence,
+                name='Uncertainty',
+                fill='tozeroy',
+                line=dict(color=self.config.color_scheme['tertiary'])
+            ),
+            row=1, col=2
+        )
+        
+        # 3. Contributing Factors
+        factors = self._analyze_pattern_factors(pattern_metrics)
+        fig.add_trace(
+            go.Bar(
+                x=list(factors.keys()),
+                y=list(factors.values()),
+                name='Factor Importance'
+            ),
+            row=2, col=1
+        )
+        
+        # 4. Historical Performance
+        performance = self._evaluate_pattern_performance(pattern_metrics)
+        fig.add_trace(
+            go.Scatter(
+                x=performance.index,
+                y=performance['accuracy'],
+                name='Forecast Accuracy',
+                line=dict(color=self.config.color_scheme['primary'])
+            ),
+            row=2, col=2
+        )
+        
+        # Update layout
+        fig.update_layout(
+            height=800,
+            width=1200,
+            showlegend=True,
+            title_text=f"Pattern Forecast Analysis - {pattern_type}"
+        )
+        
+        return fig
+
+    def _forecast_pattern_occurrence(self, 
+                                pattern_metrics: pd.DataFrame,
+                                horizon: int) -> Tuple[pd.Series, pd.Series]:
+        """Forecast pattern occurrences.
+        
+        Args:
+            pattern_metrics: Historical pattern metrics
+            horizon: Forecast horizon
+            
+        Returns:
+            Tuple of (forecast, confidence) Series
+        """
+        # Prepare features for forecasting
+        features = pd.DataFrame({
+            'concentration': pattern_metrics['global_concentration'],
+            'momentum': pattern_metrics['global_concentration'].diff(),
+            'volatility': pattern_metrics['global_concentration'].rolling(5).std(),
+            'trend': pattern_metrics['global_concentration'].rolling(20).mean()
+        }).dropna()
+        
+        # Split into train/test
+        train_size = int(len(features) * 0.8)
+        train_features = features[:train_size]
+        train_target = pattern_metrics['global_concentration'][train_features.index]
+        
+        # Train model
+        from sklearn.ensemble import GradientBoostingRegressor
+        model = GradientBoostingRegressor(n_estimators=100, random_state=42)
+        model.fit(train_features, train_target)
+        
+        # Generate forecast
+        last_features = features.iloc[-1:]
+        forecast = []
+        confidence = []
+        
+        for _ in range(horizon):
+            # Make prediction
+            pred = model.predict(last_features)
+            forecast.append(pred[0])
+            
+            # Estimate uncertainty
+            predictions = []
+            for estimator in model.estimators_:
+                predictions.append(estimator[0].predict(last_features)[0])
+            confidence.append(np.std(predictions))
+            
+            # Update features for next prediction
+            new_features = pd.DataFrame({
+                'concentration': [pred[0]],
+                'momentum': [pred[0] - last_features['concentration'].iloc[-1]],
+                'volatility': [last_features['volatility'].iloc[-1]],  # Use last known volatility
+                'trend': [last_features['trend'].iloc[-1]]  # Use last known trend
+            }, index=[last_features.index[-1] + pd.Timedelta(days=1)])
+            
+            last_features = new_features
+            
+        # Create forecast series
+        dates = pd.date_range(
+            start=pattern_metrics.index[-1] + pd.Timedelta(days=1),
+            periods=horizon,
+            freq='D'
+        )
+        
+        return (
+            pd.Series(forecast, index=dates),
+            pd.Series(confidence, index=dates)
+        )
+
+    def _analyze_pattern_factors(self, pattern_metrics: pd.DataFrame) -> Dict[str, float]:
+        """Analyze factors contributing to pattern occurrence."""
+        # Calculate factor importance
+        factors = {
+            'Market_Volatility': abs(np.corrcoef(
+                pattern_metrics['global_concentration'],
+                pattern_metrics['global_concentration'].rolling(5).std()
+            )[0, 1]),
+            'Trend_Strength': abs(np.corrcoef(
+                pattern_metrics['global_concentration'],
+                pattern_metrics['global_concentration'].rolling(20).mean()
+            )[0, 1]),
+            'Volume': abs(np.corrcoef(
+                pattern_metrics['global_concentration'],
+                pattern_metrics.get('volume_ratio', np.zeros_like(pattern_metrics.index))
+            )[0, 1]),
+            'Previous_Success': abs(np.corrcoef(
+                pattern_metrics['global_concentration'],
+                pattern_metrics['success_rate'].shift(1)
+            )[0, 1])
+        }
+        
+        # Normalize importance scores
+        total = sum(factors.values())
+        return {k: v/total for k, v in factors.items()}
+
+    def _evaluate_pattern_performance(self, pattern_metrics: pd.DataFrame) -> pd.DataFrame:
+        """Evaluate historical pattern forecasting performance."""
+        # Calculate rolling accuracy
+        window = 20
+        accuracy = pd.DataFrame(index=pattern_metrics.index)
+        
+        accuracy['accuracy'] = pattern_metrics['success_rate'].rolling(window).mean()
+        accuracy['volatility'] = pattern_metrics['success_rate'].rolling(window).std()
+        accuracy['trend'] = accuracy['accuracy'].rolling(window).apply(
+            lambda x: np.polyfit(range(len(x)), x, 1)[0]
+        )
+        
+        return accuracy

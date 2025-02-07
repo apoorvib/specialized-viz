@@ -4016,3 +4016,298 @@ class NetworkVisualizerExtension(NetworkVisualizer):
         )
         
         return fig
+    
+    def _create_animated_layout(self, G: nx.Graph, time_factor: float) -> Dict:
+        """Create dynamic layout for animation frames.
+        
+        Args:
+            G: NetworkX graph
+            time_factor: Animation progress (0 to 1)
+            
+        Returns:
+            Dict: Node positions
+        """
+        # Base layout using force-directed algorithm
+        base_pos = nx.spring_layout(
+            G,
+            k=1/np.sqrt(len(G.nodes())),
+            iterations=50,
+            seed=self.config.layout_seed
+        )
+        
+        # Add dynamic adjustments based on time
+        pos = {}
+        for node in G.nodes():
+            # Get base position
+            x, y = base_pos[node]
+            
+            # Add time-based movement
+            angle = 2 * np.pi * time_factor
+            radius = 0.1 * np.sin(2 * np.pi * time_factor)
+            
+            # Calculate position with dynamic component
+            pos[node] = np.array([
+                x + radius * np.cos(angle),
+                y + radius * np.sin(angle)
+            ])
+        
+        return pos
+
+    def _create_animated_traces(self, G: nx.Graph, pos: Dict) -> List[go.Scatter]:
+        """Create traces for animation frames.
+        
+        Args:
+            G: NetworkX graph
+            pos: Node positions
+            
+        Returns:
+            List[go.Scatter]: List of traces for visualization
+        """
+        traces = []
+        
+        # Create edge trace
+        edge_x = []
+        edge_y = []
+        edge_colors = []
+        
+        for edge in G.edges(data=True):
+            x0, y0 = pos[edge[0]]
+            x1, y1 = pos[edge[1]]
+            edge_x.extend([x0, x1, None])
+            edge_y.extend([y0, y1, None])
+            
+            # Dynamic edge color based on weight
+            weight = edge[2].get('weight', 1.0)
+            edge_colors.extend([weight, weight, None])
+        
+        traces.append(
+            go.Scatter(
+                x=edge_x,
+                y=edge_y,
+                mode='lines',
+                line=dict(
+                    color=edge_colors,
+                    colorscale='Viridis',
+                    width=1
+                ),
+                hoverinfo='none'
+            )
+        )
+        
+        # Create node trace
+        node_x = []
+        node_y = []
+        node_colors = []
+        node_sizes = []
+        node_text = []
+        
+        # Calculate node metrics for visualization
+        centrality = nx.eigenvector_centrality_numpy(G)
+        clustering = nx.clustering(G)
+        
+        for node in G.nodes():
+            x, y = pos[node]
+            node_x.append(x)
+            node_y.append(y)
+            
+            # Dynamic node properties
+            node_colors.append(centrality[node])
+            node_sizes.append(20 + 30 * clustering[node])
+            
+            # Node information
+            node_text.append(
+                f"Node: {node}<br>" +
+                f"Centrality: {centrality[node]:.3f}<br>" +
+                f"Clustering: {clustering[node]:.3f}"
+            )
+        
+        traces.append(
+            go.Scatter(
+                x=node_x,
+                y=node_y,
+                mode='markers+text' if self.config.show_labels else 'markers',
+                text=[str(node) for node in G.nodes()] if self.config.show_labels else None,
+                textposition='top center',
+                marker=dict(
+                    size=node_sizes,
+                    color=node_colors,
+                    colorscale='Viridis',
+                    showscale=True,
+                    colorbar=dict(title='Centrality')
+                ),
+                hovertext=node_text,
+                hoverinfo='text'
+            )
+        )
+        
+        return traces
+
+    def create_dynamic_subgraph_view(self, focus_node: str = None) -> go.Figure:
+        """Create dynamic view focusing on subgraph evolution.
+        
+        Args:
+            focus_node: Optional node to focus on
+            
+        Returns:
+            go.Figure: Dynamic subgraph visualization
+        """
+        fig = go.Figure()
+        
+        # If no focus node provided, use most central node
+        if focus_node is None:
+            centrality = nx.eigenvector_centrality_numpy(self.network_builder.graph)
+            focus_node = max(centrality.keys(), key=lambda x: centrality[x])
+        
+        # Generate frames showing expanding subgraph
+        frames = []
+        for depth in range(1, 4):  # Show up to 3 degrees of separation
+            # Get subgraph
+            subgraph = nx.ego_graph(
+                self.network_builder.graph,
+                focus_node,
+                radius=depth
+            )
+            
+            # Create layout for subgraph
+            pos = nx.spring_layout(
+                subgraph,
+                k=1/np.sqrt(len(subgraph.nodes())),
+                iterations=50,
+                seed=self.config.layout_seed
+            )
+            
+            # Create frame
+            frame = go.Frame(
+                data=self._create_subgraph_traces(subgraph, pos, focus_node),
+                name=f'depth_{depth}'
+            )
+            frames.append(frame)
+        
+        # Add frames to figure
+        fig.frames = frames
+        
+        # Add initial data
+        initial_subgraph = nx.ego_graph(self.network_builder.graph, focus_node, radius=1)
+        initial_pos = nx.spring_layout(
+            initial_subgraph,
+            k=1/np.sqrt(len(initial_subgraph.nodes())),
+            iterations=50,
+            seed=self.config.layout_seed
+        )
+        
+        initial_traces = self._create_subgraph_traces(
+            initial_subgraph,
+            initial_pos,
+            focus_node
+        )
+        for trace in initial_traces:
+            fig.add_trace(trace)
+        
+        # Add animation controls
+        fig.update_layout(
+            updatemenus=[{
+                'type': 'buttons',
+                'showactive': False,
+                'buttons': [{
+                    'label': 'Expand',
+                    'method': 'animate',
+                    'args': [None, {
+                        'frame': {'duration': 750, 'redraw': True},
+                        'fromcurrent': True,
+                        'transition': {'duration': 500}
+                    }]
+                }, {
+                    'label': 'Reset',
+                    'method': 'animate',
+                    'args': [['depth_1'], {
+                        'frame': {'duration': 0, 'redraw': True},
+                        'mode': 'immediate',
+                        'transition': {'duration': 0}
+                    }]
+                }]
+            }],
+            title=f"Dynamic Subgraph View - Focused on {focus_node}"
+        )
+        
+        return fig
+
+    def _create_subgraph_traces(self, G: nx.Graph, pos: Dict, focus_node: str) -> List[go.Scatter]:
+        """Create traces for subgraph visualization.
+        
+        Args:
+            G: NetworkX graph
+            pos: Node positions
+            focus_node: Central node to focus on
+            
+        Returns:
+            List[go.Scatter]: List of traces for visualization
+        """
+        traces = []
+        
+        # Calculate node distances from focus
+        distances = nx.single_source_shortest_path_length(G, focus_node)
+        
+        # Add edges with gradient coloring
+        edge_x = []
+        edge_y = []
+        edge_colors = []
+        
+        for edge in G.edges():
+            x0, y0 = pos[edge[0]]
+            x1, y1 = pos[edge[1]]
+            edge_x.extend([x0, x1, None])
+            edge_y.extend([y0, y1, None])
+            
+            # Color based on average distance from focus
+            avg_distance = (distances[edge[0]] + distances[edge[1]]) / 2
+            edge_colors.extend([avg_distance, avg_distance, None])
+        
+        traces.append(
+            go.Scatter(
+                x=edge_x,
+                y=edge_y,
+                mode='lines',
+                line=dict(
+                    color=edge_colors,
+                    colorscale='Viridis',
+                    width=1
+                ),
+                hoverinfo='none'
+            )
+        )
+        
+        # Add nodes with distance-based styling
+        for dist in sorted(set(distances.values()), reverse=True):
+            # Get nodes at this distance
+            nodes_at_dist = [node for node, d in distances.items() if d == dist]
+            
+            node_x = [pos[node][0] for node in nodes_at_dist]
+            node_y = [pos[node][1] for node in nodes_at_dist]
+            
+            # Special styling for focus node
+            if dist == 0:
+                marker_size = 30
+                marker_color = 'red'
+            else:
+                marker_size = 20 - dist * 3  # Decrease size with distance
+                marker_color = f'rgba(31, 119, 180, {1 - dist * 0.2})'  # Fade with distance
+            
+            traces.append(
+                go.Scatter(
+                    x=node_x,
+                    y=node_y,
+                    mode='markers+text' if dist <= 1 else 'markers',
+                    text=[str(node) for node in nodes_at_dist] if dist <= 1 else None,
+                    textposition='top center',
+                    marker=dict(
+                        size=marker_size,
+                        color=marker_color,
+                        line=dict(width=1, color='white')
+                    ),
+                    hovertext=[f"Node: {node}<br>Distance: {dist}" for node in nodes_at_dist],
+                    hoverinfo='text',
+                    name=f'Distance {dist}'
+                )
+            )
+        
+        return traces

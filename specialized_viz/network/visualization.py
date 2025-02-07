@@ -2684,3 +2684,430 @@ class NetworkVisualizerExtension(NetworkVisualizer):
         )
         
         return fig
+    
+    def create_stress_test_visualization(self) -> go.Figure:
+        """Create visualization of network stress test results."""
+        fig = make_subplots(
+            rows=2, cols=2,
+            subplot_titles=(
+                'Stress Test Results',
+                'Recovery Analysis',
+                'Component Sensitivity',
+                'Risk Distribution'
+            )
+        )
+        
+        # Run stress tests
+        stress_results = self._run_network_stress_tests()
+        
+        # 1. Stress Test Results Overview
+        stress_heatmap = self._create_stress_heatmap(stress_results['metrics'])
+        fig.add_trace(
+            go.Heatmap(
+                z=stress_heatmap.values,
+                x=stress_heatmap.columns,
+                y=stress_heatmap.index,
+                colorscale='RdYlBu_r',
+                colorbar=dict(title='Impact Score')
+            ),
+            row=1, col=1
+        )
+        
+        # 2. Recovery Analysis
+        recovery_data = stress_results['recovery']
+        for scenario, data in recovery_data.items():
+            fig.add_trace(
+                go.Scatter(
+                    x=data['steps'],
+                    y=data['recovery_rate'],
+                    name=f'Scenario {scenario}',
+                    mode='lines',
+                    line=dict(dash='solid' if scenario == 'baseline' else 'dash')
+                ),
+                row=1, col=2
+            )
+        
+        # 3. Component Sensitivity
+        sensitivity = stress_results['sensitivity']
+        fig.add_trace(
+            go.Bar(
+                x=sensitivity.index,
+                y=sensitivity['sensitivity_score'],
+                marker_color=self.config.color_scheme['primary'],
+                name='Component Sensitivity'
+            ),
+            row=2, col=1
+        )
+        
+        # 4. Risk Distribution
+        risk_dist = stress_results['risk_distribution']
+        fig.add_trace(
+            go.Violin(
+                y=risk_dist,
+                box_visible=True,
+                line_color=self.config.color_scheme['secondary'],
+                fillcolor=self.config.color_scheme['secondary'],
+                opacity=0.6,
+                name='Risk Distribution'
+            ),
+            row=2, col=2
+        )
+        
+        # Update layout
+        fig.update_layout(
+            height=900,
+            width=1200,
+            showlegend=True,
+            title_text="Network Stress Test Analysis"
+        )
+        
+        return fig
+
+    def _run_network_stress_tests(self) -> Dict:
+        """Run comprehensive network stress tests."""
+        stress_results = {
+            'metrics': pd.DataFrame(),
+            'recovery': {},
+            'sensitivity': pd.Series(),
+            'risk_distribution': pd.Series()
+        }
+        
+        # Define stress scenarios
+        scenarios = self._define_stress_scenarios()
+        
+        # Run tests for each scenario
+        for scenario in scenarios:
+            # Apply stress
+            G_stressed = self._apply_stress(
+                self.network_builder.graph.copy(),
+                scenario
+            )
+            
+            # Calculate impact metrics
+            metrics = self._calculate_stress_metrics(G_stressed)
+            stress_results['metrics'] = pd.concat(
+                [stress_results['metrics'], metrics],
+                axis=0
+            )
+            
+            # Simulate recovery
+            recovery = self._simulate_recovery(G_stressed, scenario)
+            stress_results['recovery'][scenario['name']] = recovery
+            
+            # Calculate component sensitivity
+            sensitivity = self._calculate_component_sensitivity(
+                G_stressed, scenario
+            )
+            stress_results['sensitivity'] = pd.concat(
+                [stress_results['sensitivity'], sensitivity]
+            )
+            
+            # Update risk distribution
+            risk = self._calculate_risk_scores(G_stressed, scenario)
+            stress_results['risk_distribution'] = pd.concat(
+                [stress_results['risk_distribution'], risk]
+            )
+        
+        return stress_results
+
+    def _define_stress_scenarios(self) -> List[Dict]:
+        """Define different stress test scenarios."""
+        scenarios = []
+        
+        # Random node removal
+        scenarios.append({
+            'name': 'random_removal',
+            'type': 'node_removal',
+            'selection': 'random',
+            'fraction': 0.2
+        })
+        
+        # Targeted high centrality node removal
+        scenarios.append({
+            'name': 'targeted_removal',
+            'type': 'node_removal',
+            'selection': 'centrality',
+            'fraction': 0.1
+        })
+        
+        # Edge weight reduction
+        scenarios.append({
+            'name': 'edge_stress',
+            'type': 'edge_weight',
+            'reduction': 0.5
+        })
+        
+        # Community isolation
+        scenarios.append({
+            'name': 'community_isolation',
+            'type': 'community',
+            'isolation_factor': 0.8
+        })
+        
+        return scenarios
+
+    def _apply_stress(self, G: nx.Graph, scenario: Dict) -> nx.Graph:
+        """Apply stress scenario to network."""
+        if scenario['type'] == 'node_removal':
+            nodes_to_remove = self._select_nodes_for_removal(
+                G, scenario['selection'], scenario['fraction']
+            )
+            G.remove_nodes_from(nodes_to_remove)
+            
+        elif scenario['type'] == 'edge_weight':
+            for u, v, data in G.edges(data=True):
+                data['weight'] *= (1 - scenario['reduction'])
+                
+        elif scenario['type'] == 'community':
+            communities = self.network_builder.detect_communities(G=G)
+            self._isolate_communities(G, communities, scenario['isolation_factor'])
+        
+        return G
+
+    def _select_nodes_for_removal(self, G: nx.Graph, 
+                                selection: str, 
+                                fraction: float) -> List[str]:
+        """Select nodes for removal based on strategy."""
+        n_remove = int(len(G.nodes()) * fraction)
+        
+        if selection == 'random':
+            return random.sample(list(G.nodes()), n_remove)
+        
+        elif selection == 'centrality':
+            centrality = nx.eigenvector_centrality_numpy(G)
+            return sorted(
+                centrality.keys(),
+                key=lambda x: centrality[x],
+                reverse=True
+            )[:n_remove]
+            
+        raise ValueError(f"Unknown selection strategy: {selection}")
+
+    def _calculate_stress_metrics(self, G: nx.Graph) -> pd.DataFrame:
+        """Calculate network metrics under stress."""
+        metrics = pd.DataFrame(index=[0])
+        
+        # Connectivity metrics
+        metrics['connectivity'] = nx.node_connectivity(G)
+        metrics['edge_connectivity'] = nx.edge_connectivity(G)
+        
+        # Efficiency metrics
+        metrics['global_efficiency'] = nx.global_efficiency(G)
+        metrics['local_efficiency'] = nx.local_efficiency(G)
+        
+        # Centralization metrics
+        metrics['degree_centralization'] = self._calculate_centralization(G)
+        metrics['betweenness_centralization'] = self._calculate_betweenness_centralization(G)
+        
+        # Community metrics
+        communities = self.network_builder.detect_communities(G=G)
+        metrics['modularity'] = self._calculate_modularity(G, communities)
+        
+        return metrics
+
+    def _simulate_recovery(self, G: nx.Graph, scenario: Dict) -> Dict:
+        """Simulate network recovery after stress."""
+        recovery_data = {
+            'steps': [],
+            'recovery_rate': [],
+            'component_recovery': {},
+            'stability_metrics': []
+        }
+        
+        # Get baseline metrics
+        baseline_metrics = self._calculate_stress_metrics(
+            self.network_builder.graph
+        )
+        
+        # Simulate recovery steps
+        n_steps = 20
+        for step in range(n_steps):
+            # Calculate current recovery rate
+            current_metrics = self._calculate_stress_metrics(G)
+            recovery_rate = np.mean([
+                current_metrics[col][0] / baseline_metrics[col][0]
+                for col in current_metrics.columns
+            ])
+            
+            recovery_data['steps'].append(step)
+            recovery_data['recovery_rate'].append(recovery_rate)
+            
+            # Track component-wise recovery
+            components = list(nx.connected_components(G))
+            recovery_data['component_recovery'][step] = {
+                'n_components': len(components),
+                'largest_component_size': len(max(components, key=len))
+            }
+            
+            # Calculate stability metrics
+            stability = self._calculate_network_stability(G)
+            recovery_data['stability_metrics'].append(stability)
+            
+            # Simulate recovery step
+            self._apply_recovery_step(G, scenario, step/n_steps)
+        
+        return recovery_data
+
+    def _apply_recovery_step(self, G: nx.Graph, scenario: Dict, progress: float):
+        """Apply single recovery step based on scenario."""
+        if scenario['type'] == 'node_removal':
+            # Add back some removed nodes
+            removed_nodes = set(self.network_builder.graph.nodes()) - set(G.nodes())
+            if removed_nodes:
+                nodes_to_add = random.sample(
+                    removed_nodes,
+                    max(1, int(len(removed_nodes) * 0.1))
+                )
+                G.add_nodes_from(nodes_to_add)
+                
+                # Restore edges to added nodes
+                for node in nodes_to_add:
+                    original_edges = [
+                        (node, n) for n in self.network_builder.graph[node]
+                        if n in G.nodes()
+                    ]
+                    G.add_edges_from(original_edges)
+                    
+        elif scenario['type'] == 'edge_weight':
+            # Gradually restore edge weights
+            for u, v, data in G.edges(data=True):
+                original_weight = self.network_builder.graph[u][v]['weight']
+                current_weight = data['weight']
+                data['weight'] = current_weight + (original_weight - current_weight) * 0.1
+                
+        elif scenario['type'] == 'community_isolation':
+            # Gradually restore inter-community connections
+            communities = self.network_builder.detect_communities(G=G)
+            for u, v, data in self.network_builder.graph.edges(data=True):
+                if (u in G.nodes() and v in G.nodes() and 
+                    communities[u] != communities[v] and 
+                    not G.has_edge(u, v)):
+                    if random.random() < 0.1:  # 10% chance to restore each edge
+                        G.add_edge(u, v, **data)
+
+    def create_dynamic_network_view(self) -> go.Figure:
+        """Create real-time visualization of network evolution."""
+        fig = make_subplots(
+            rows=2, cols=2,
+            subplot_titles=(
+                'Network State',
+                'Metric Evolution',
+                'Alert Dashboard',
+                'Change Detection'
+            )
+        )
+        
+        # Initialize with current state
+        self._add_current_network_state(fig)
+        self._add_metric_evolution(fig)
+        self._add_alert_dashboard(fig)
+        self._add_change_detection(fig)
+        
+        # Add update functionality
+        fig.update_layout(
+            updatemenus=[{
+                'type': 'buttons',
+                'showactive': False,
+                'buttons': [{
+                    'label': 'Play',
+                    'method': 'animate',
+                    'args': [None, {
+                        'frame': {'duration': 500, 'redraw': True},
+                        'fromcurrent': True,
+                        'transition': {'duration': 300}
+                    }]
+                }, {
+                    'label': 'Pause',
+                    'method': 'animate',
+                    'args': [[None], {
+                        'frame': {'duration': 0, 'redraw': False},
+                        'mode': 'immediate',
+                        'transition': {'duration': 0}
+                    }]
+                }]
+            }]
+        )
+        
+        # Update layout
+        fig.update_layout(
+            height=1000,
+            width=1400,
+            showlegend=True,
+            title_text="Dynamic Network Evolution"
+        )
+        
+        return fig
+
+    def _add_current_network_state(self, fig: go.Figure):
+        """Add current network state visualization."""
+        G = self.network_builder.graph
+        pos = nx.spring_layout(G)
+        
+        # Add edges
+        edge_trace = self._create_edge_trace(pos)
+        fig.add_trace(edge_trace, row=1, col=1)
+        
+        # Add nodes
+        node_trace = self._create_node_trace(pos)
+        fig.add_trace(node_trace, row=1, col=1)
+        
+        # Update axes
+        fig.update_xaxes(showgrid=False, zeroline=False, showticklabels=False,
+                        row=1, col=1)
+        fig.update_yaxes(showgrid=False, zeroline=False, showticklabels=False,
+                        row=1, col=1)
+
+    def update_network_metrics(self) -> Dict:
+        """Update and calculate real-time network metrics."""
+        metrics = {}
+        
+        # Calculate basic metrics
+        metrics['density'] = nx.density(self.network_builder.graph)
+        metrics['avg_clustering'] = nx.average_clustering(self.network_builder.graph)
+        metrics['diameter'] = nx.diameter(self.network_builder.graph)
+        
+        # Calculate centrality metrics
+        centrality = nx.eigenvector_centrality_numpy(self.network_builder.graph)
+        metrics['centralization'] = np.std(list(centrality.values()))
+        
+        # Calculate community metrics
+        communities = self.network_builder.detect_communities()
+        metrics['modularity'] = self._calculate_modularity(
+            self.network_builder.graph,
+            communities
+        )
+        
+        return metrics
+
+    def detect_structural_changes(self) -> List[Dict]:
+        """Detect significant structural changes in the network."""
+        changes = []
+        
+        # Get historical metrics
+        if not hasattr(self, '_historical_metrics'):
+            self._historical_metrics = []
+        
+        # Calculate current metrics
+        current_metrics = self.update_network_metrics()
+        
+        # Detect significant changes
+        if self._historical_metrics:
+            prev_metrics = self._historical_metrics[-1]
+            
+            for metric, value in current_metrics.items():
+                change = abs(value - prev_metrics[metric]) / prev_metrics[metric]
+                if change > 0.1:  # 10% change threshold
+                    changes.append({
+                        'metric': metric,
+                        'change': change,
+                        'old_value': prev_metrics[metric],
+                        'new_value': value,
+                        'timestamp': pd.Timestamp.now()
+                    })
+        
+        # Update historical metrics
+        self._historical_metrics.append(current_metrics)
+        if len(self._historical_metrics) > 100:  # Keep last 100 observations
+            self._historical_metrics.pop(0)
+        
+        return changes

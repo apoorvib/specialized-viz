@@ -1692,3 +1692,269 @@ class NetworkVisualizerExtension(NetworkVisualizer):
             'cascade_sizes': cascade_sizes,
             'temporal_patterns': temporal_patterns
         }
+
+    def create_regime_transition_network(self, regimes: List[Dict]) -> go.Figure:
+        """Create visualization of regime transitions and their characteristics.
+        
+        Args:
+            regimes: List of regime dictionaries with name, start_date, end_date, and characteristics
+            
+        Returns:
+            go.Figure: Interactive regime transition network visualization
+        """
+        # Create directed graph for regime transitions
+        G = nx.DiGraph()
+        
+        # Add nodes for each regime
+        for regime in regimes:
+            G.add_node(regime['name'], 
+                    start_date=regime['start_date'],
+                    end_date=regime['end_date'],
+                    characteristics=regime.get('characteristics', {}))
+        
+        # Add edges for transitions
+        for i in range(len(regimes)-1):
+            current = regimes[i]
+            next_regime = regimes[i+1]
+            
+            # Calculate transition metrics
+            transition_metrics = self._calculate_transition_metrics(
+                current, next_regime
+            )
+            
+            G.add_edge(
+                current['name'],
+                next_regime['name'],
+                **transition_metrics
+            )
+        
+        # Create visualization
+        fig = go.Figure()
+        
+        # Add edges with arrows
+        pos = nx.spring_layout(G)
+        edge_x = []
+        edge_y = []
+        edge_text = []
+        
+        for edge in G.edges(data=True):
+            x0, y0 = pos[edge[0]]
+            x1, y1 = pos[edge[1]]
+            
+            # Create curved path for edge
+            path = self._create_curved_path(
+                (x0, y0), (x1, y1), curvature=0.2
+            )
+            
+            edge_x.extend(path[0] + [None])
+            edge_y.extend(path[1] + [None])
+            
+            # Create edge label
+            edge_text.append(
+                f"Transition strength: {edge[2]['strength']:.2f}<br>" +
+                f"Duration: {edge[2]['duration']:.1f} days"
+            )
+            
+            # Add arrow marker
+            arrow_pos = self._calculate_arrow_position(path[0], path[1], 0.8)
+            fig.add_trace(
+                go.Scatter(
+                    x=[arrow_pos[0]],
+                    y=[arrow_pos[1]],
+                    mode='markers',
+                    marker=dict(
+                        symbol='triangle-right',
+                        size=15,
+                        angle=self._calculate_arrow_angle(
+                            path[0][-2:], path[1][-2:]
+                        ),
+                        color=self.config.color_scheme['edge_default']
+                    ),
+                    showlegend=False,
+                    hoverinfo='none'
+                )
+            )
+        
+        # Add edges
+        fig.add_trace(
+            go.Scatter(
+                x=edge_x,
+                y=edge_y,
+                mode='lines',
+                line=dict(
+                    width=2,
+                    color=self.config.color_scheme['edge_default']
+                ),
+                hovertext=edge_text,
+                hoverinfo='text',
+                name='Transitions'
+            )
+        )
+        
+        # Add nodes
+        node_x = []
+        node_y = []
+        node_text = []
+        node_colors = []
+        
+        for node in G.nodes(data=True):
+            x, y = pos[node[0]]
+            node_x.append(x)
+            node_y.append(y)
+            
+            # Create node label
+            characteristics = node[1]['characteristics']
+            node_text.append(
+                f"Regime: {node[0]}<br>" +
+                f"Start: {node[1]['start_date']:%Y-%m-%d}<br>" +
+                f"End: {node[1]['end_date']:%Y-%m-%d}<br>" +
+                f"Volatility: {characteristics.get('volatility', 'N/A')}<br>" +
+                f"Trend: {characteristics.get('trend', 'N/A')}"
+            )
+            
+            # Set node color based on regime characteristics
+            node_colors.append(
+                self._get_regime_color(characteristics)
+            )
+        
+        fig.add_trace(
+            go.Scatter(
+                x=node_x,
+                y=node_y,
+                mode='markers+text',
+                marker=dict(
+                    size=30,
+                    color=node_colors,
+                    line=dict(width=2, color='white')
+                ),
+                text=[node[0] for node in G.nodes(data=True)],
+                textposition='middle center',
+                hovertext=node_text,
+                hoverinfo='text',
+                name='Regimes'
+            )
+        )
+        
+        # Update layout
+        fig.update_layout(
+            showlegend=True,
+            hovermode='closest',
+            margin=dict(b=20, l=5, r=5, t=40),
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            width=1000,
+            height=800,
+            title_text="Market Regime Transition Network"
+        )
+        
+        return fig
+
+    def _calculate_transition_metrics(self, 
+                                    current_regime: Dict,
+                                    next_regime: Dict) -> Dict:
+        """Calculate metrics for regime transition.
+        
+        Args:
+            current_regime: Current regime information
+            next_regime: Next regime information
+            
+        Returns:
+            Dict: Transition metrics
+        """
+        # Calculate duration between regimes
+        duration = (next_regime['start_date'] - 
+                current_regime['end_date']).total_seconds() / (24 * 3600)
+        
+        # Calculate characteristic changes
+        curr_chars = current_regime.get('characteristics', {})
+        next_chars = next_regime.get('characteristics', {})
+        
+        # Calculate transition strength based on characteristic changes
+        strength = 0
+        metrics = ['volatility', 'trend', 'volume']
+        
+        for metric in metrics:
+            if metric in curr_chars and metric in next_chars:
+                strength += abs(
+                    self._normalize_characteristic(curr_chars[metric]) -
+                    self._normalize_characteristic(next_chars[metric])
+                )
+        
+        strength = strength / len(metrics)  # Normalize to [0, 1]
+        
+        return {
+            'duration': duration,
+            'strength': strength
+        }
+
+    def _normalize_characteristic(self, value: str) -> float:
+        """Normalize regime characteristic to numerical value."""
+        if isinstance(value, (int, float)):
+            return float(value)
+            
+        mappings = {
+            'low': 0.0,
+            'medium': 0.5,
+            'high': 1.0,
+            'up': 1.0,
+            'down': 0.0,
+            'sideways': 0.5
+        }
+        
+        return mappings.get(value.lower(), 0.5)
+
+    def _get_regime_color(self, characteristics: Dict) -> str:
+        """Get color for regime based on its characteristics."""
+        # Calculate color based on volatility and trend
+        volatility = self._normalize_characteristic(
+            characteristics.get('volatility', 'medium')
+        )
+        trend = self._normalize_characteristic(
+            characteristics.get('trend', 'sideways')
+        )
+        
+        # Use different colors for different regime types
+        if trend > 0.7 and volatility < 0.3:
+            return self.config.color_scheme['bullish']  # Strong uptrend, low vol
+        elif trend < 0.3 and volatility > 0.7:
+            return self.config.color_scheme['bearish']  # Strong downtrend, high vol
+        elif volatility < 0.3:
+            return self.config.color_scheme['neutral']  # Low volatility
+        else:
+            return self.config.color_scheme['complex']  # Complex regime
+
+    def _create_curved_path(self, 
+                        start: Tuple[float, float],
+                        end: Tuple[float, float],
+                        curvature: float = 0.2) -> Tuple[List[float], List[float]]:
+        """Create curved path between two points.
+        
+        Args:
+            start: Start point coordinates
+            end: End point coordinates
+            curvature: Amount of curvature (0 = straight line)
+            
+        Returns:
+            Tuple of x and y coordinates for path
+        """
+        # Calculate midpoint
+        mid_x = (start[0] + end[0]) / 2
+        mid_y = (start[1] + end[1]) / 2
+        
+        # Calculate perpendicular vector for control point
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        
+        control_x = mid_x - dy * curvature
+        control_y = mid_y + dx * curvature
+        
+        # Create path points
+        t = np.linspace(0, 1, 100)
+        x = ((1-t)**2 * start[0] + 
+            2*(1-t)*t * control_x + 
+            t**2 * end[0])
+        y = ((1-t)**2 * start[1] + 
+            2*(1-t)*t * control_y + 
+            t**2 * end[1])
+        
+        return x.tolist(), y.tolist()

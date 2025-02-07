@@ -1358,3 +1358,337 @@ class NetworkVisualizerExtension(NetworkVisualizer):
         )
         
         return accuracy
+    
+    def create_resilience_analysis(self, 
+                             n_simulations: int = 100,
+                             removal_fraction: float = 0.3) -> go.Figure:
+        """Analyze network resilience through node/edge removal simulations.
+        
+        Args:
+            n_simulations: Number of simulation runs
+            removal_fraction: Fraction of nodes/edges to remove
+            
+        Returns:
+            go.Figure: Network resilience visualization
+        """
+        fig = make_subplots(
+            rows=2, cols=2,
+            subplot_titles=(
+                'Random Node Removal Impact',
+                'Targeted Node Removal Impact',
+                'Edge Weight Impact',
+                'Recovery Analysis'
+            )
+        )
+        
+        # Run node removal simulations
+        random_results = self._simulate_node_removal(
+            'random', n_simulations, removal_fraction
+        )
+        targeted_results = self._simulate_node_removal(
+            'targeted', n_simulations, removal_fraction
+        )
+        
+        # 1. Random Node Removal Impact
+        for metric, values in random_results.items():
+            fig.add_trace(
+                go.Scatter(
+                    x=np.linspace(0, removal_fraction, len(values)),
+                    y=values,
+                    name=f'Random - {metric}',
+                    line=dict(dash='solid')
+                ),
+                row=1, col=1
+            )
+        
+        # 2. Targeted Node Removal Impact
+        for metric, values in targeted_results.items():
+            fig.add_trace(
+                go.Scatter(
+                    x=np.linspace(0, removal_fraction, len(values)),
+                    y=values,
+                    name=f'Targeted - {metric}',
+                    line=dict(dash='dash')
+                ),
+                row=1, col=2
+            )
+        
+        # 3. Edge Weight Impact Analysis
+        edge_impact = self._analyze_edge_weight_impact()
+        fig.add_trace(
+            go.Heatmap(
+                z=edge_impact.values,
+                x=edge_impact.columns,
+                y=edge_impact.index,
+                colorscale='RdBu',
+                colorbar=dict(title='Impact')
+            ),
+            row=2, col=1
+        )
+        
+        # 4. Recovery Analysis
+        recovery_metrics = self._analyze_network_recovery()
+        fig.add_trace(
+            go.Scatter(
+                x=recovery_metrics.index,
+                y=recovery_metrics['recovery_rate'],
+                name='Recovery Rate',
+                line=dict(color=self.config.color_scheme['primary'])
+            ),
+            row=2, col=2
+        )
+        
+        # Update layout
+        fig.update_layout(
+            height=900,
+            width=1200,
+            showlegend=True,
+            title_text="Network Resilience Analysis"
+        )
+        
+        return fig
+
+    def _simulate_node_removal(self, 
+                            mode: str, 
+                            n_simulations: int,
+                            removal_fraction: float) -> Dict[str, List[float]]:
+        """Simulate network behavior under node removal.
+        
+        Args:
+            mode: 'random' or 'targeted'
+            n_simulations: Number of simulations
+            removal_fraction: Fraction of nodes to remove
+            
+        Returns:
+            Dict of metrics over removal process
+        """
+        metrics = defaultdict(list)
+        G = self.network_builder.graph.copy()
+        n_nodes = len(G.nodes())
+        nodes_to_remove = int(n_nodes * removal_fraction)
+        
+        for _ in range(n_simulations):
+            temp_G = G.copy()
+            
+            if mode == 'random':
+                remove_sequence = random.sample(list(temp_G.nodes()), nodes_to_remove)
+            else:  # targeted
+                centrality = nx.eigenvector_centrality_numpy(temp_G)
+                remove_sequence = sorted(
+                    centrality.keys(),
+                    key=lambda x: centrality[x],
+                    reverse=True
+                )[:nodes_to_remove]
+            
+            metrics_sequence = []
+            for node in remove_sequence:
+                temp_G.remove_node(node)
+                
+                # Calculate network metrics
+                metrics_sequence.append({
+                    'connectivity': nx.node_connectivity(temp_G),
+                    'efficiency': nx.global_efficiency(temp_G),
+                    'clustering': nx.average_clustering(temp_G),
+                    'components': nx.number_connected_components(temp_G)
+                })
+            
+            # Average metrics across simulations
+            for metric in metrics_sequence[0].keys():
+                metrics[metric].append([m[metric] for m in metrics_sequence])
+        
+        # Average across simulations
+        return {
+            metric: np.mean(values, axis=0)
+            for metric, values in metrics.items()
+        }
+
+    def _analyze_edge_weight_impact(self) -> pd.DataFrame:
+        """Analyze impact of edge weight perturbations."""
+        G = self.network_builder.graph
+        n_edges = len(G.edges())
+        perturbation_levels = np.linspace(-0.5, 0.5, 11)  # -50% to +50%
+        
+        impact_matrix = pd.DataFrame(
+            index=perturbation_levels,
+            columns=['connectivity', 'efficiency', 'modularity']
+        )
+        
+        base_metrics = {
+            'connectivity': nx.node_connectivity(G),
+            'efficiency': nx.global_efficiency(G),
+            'modularity': self._calculate_modularity(
+                G, self.network_builder.detect_communities()
+            )
+        }
+        
+        for perturbation in perturbation_levels:
+            # Create perturbed graph
+            G_perturbed = G.copy()
+            for u, v, data in G_perturbed.edges(data=True):
+                data['weight'] *= (1 + perturbation)
+            
+            # Calculate metrics
+            impact_matrix.loc[perturbation] = [
+                nx.node_connectivity(G_perturbed) / base_metrics['connectivity'],
+                nx.global_efficiency(G_perturbed) / base_metrics['efficiency'],
+                self._calculate_modularity(
+                    G_perturbed,
+                    self.network_builder.detect_communities(G=G_perturbed)
+                ) / base_metrics['modularity']
+            ]
+        
+        return impact_matrix
+
+    def _analyze_network_recovery(self) -> pd.DataFrame:
+        """Analyze network recovery after perturbations."""
+        recovery_metrics = pd.DataFrame()
+        G = self.network_builder.graph
+        
+        # Simulate recovery process
+        n_steps = 20
+        for step in range(n_steps):
+            # Remove random edges
+            G_damaged = G.copy()
+            edges_to_remove = random.sample(
+                list(G_damaged.edges()),
+                int(len(G_damaged.edges()) * 0.3)
+            )
+            G_damaged.remove_edges_from(edges_to_remove)
+            
+            # Simulate recovery by adding edges back
+            edges_recovered = edges_to_remove[:int(len(edges_to_remove) * step/n_steps)]
+            G_damaged.add_edges_from(edges_recovered)
+            
+            # Calculate recovery metrics
+            recovery_metrics.loc[step, 'recovery_rate'] = (
+                nx.node_connectivity(G_damaged) / nx.node_connectivity(G)
+            )
+            recovery_metrics.loc[step, 'efficiency_recovery'] = (
+                nx.global_efficiency(G_damaged) / nx.global_efficiency(G)
+            )
+            
+        return recovery_metrics
+
+    def create_pattern_cascade_analysis(self, pattern_type: str) -> go.Figure:
+        """Analyze pattern propagation cascades through the network.
+        
+        Args:
+            pattern_type: Type of pattern to analyze
+            
+        Returns:
+            go.Figure: Pattern cascade visualization
+        """
+        if not self.pattern_integration:
+            raise ValueError("Pattern integration required")
+            
+        fig = make_subplots(
+            rows=2, cols=2,
+            subplot_titles=(
+                'Cascade Progression',
+                'Node Influence in Cascades',
+                'Cascade Size Distribution',
+                'Temporal Cascade Patterns'
+            )
+        )
+        
+        # Get pattern cascade data
+        cascade_data = self._analyze_pattern_cascades(pattern_type)
+        
+        # 1. Cascade Progression
+        for cascade_id, cascade in enumerate(cascade_data['progressions']):
+            fig.add_trace(
+                go.Scatter(
+                    x=list(range(len(cascade))),
+                    y=cascade,
+                    name=f'Cascade {cascade_id}',
+                    line=dict(width=1, opacity=0.6)
+                ),
+                row=1, col=1
+            )
+        
+        # 2. Node Influence
+        node_influence = cascade_data['node_influence']
+        fig.add_trace(
+            go.Bar(
+                x=list(node_influence.keys()),
+                y=list(node_influence.values()),
+                name='Node Influence'
+            ),
+            row=1, col=2
+        )
+        
+        # 3. Cascade Size Distribution
+        cascade_sizes = cascade_data['cascade_sizes']
+        fig.add_trace(
+            go.Histogram(
+                x=cascade_sizes,
+                nbinsx=20,
+                name='Cascade Sizes'
+            ),
+            row=2, col=1
+        )
+        
+        # 4. Temporal Patterns
+        temporal_patterns = cascade_data['temporal_patterns']
+        fig.add_trace(
+            go.Scatter(
+                x=temporal_patterns.index,
+                y=temporal_patterns['cascade_frequency'],
+                name='Cascade Frequency',
+                line=dict(color=self.config.color_scheme['primary'])
+            ),
+            row=2, col=2
+        )
+        
+        # Update layout
+        fig.update_layout(
+            height=900,
+            width=1200,
+            showlegend=True,
+            title_text=f"Pattern Cascade Analysis - {pattern_type}"
+        )
+        
+        return fig
+
+    def _analyze_pattern_cascades(self, pattern_type: str) -> Dict:
+        """Analyze pattern propagation cascades."""
+        pattern_metrics = self.pattern_integration.analyze_pattern_propagation(pattern_type)
+        cascades = []
+        node_influence = defaultdict(int)
+        cascade_sizes = []
+        temporal_patterns = pd.DataFrame(index=pattern_metrics.index)
+        
+        # Identify cascades
+        for timestamp in pattern_metrics.index:
+            if pattern_metrics.loc[timestamp, 'global_concentration'] > 0.5:
+                # Track cascade progression
+                progression = []
+                affected_nodes = set()
+                
+                for t in range(5):  # Look ahead 5 periods
+                    if timestamp + t in pattern_metrics.index:
+                        newly_affected = set(
+                            node for node in self.network_builder.graph.nodes()
+                            if pattern_metrics.loc[timestamp + t, f'{node}_concentration'] > 0.5
+                        )
+                        progression.append(len(newly_affected))
+                        affected_nodes.update(newly_affected)
+                        
+                        # Update node influence
+                        for node in newly_affected:
+                            node_influence[node] += 1
+                
+                cascades.append(progression)
+                cascade_sizes.append(len(affected_nodes))
+                
+        # Calculate temporal patterns
+        temporal_patterns['cascade_frequency'] = pattern_metrics['global_concentration'].rolling(
+            window=20
+        ).apply(lambda x: sum(x > 0.5))
+        
+        return {
+            'progressions': cascades,
+            'node_influence': dict(node_influence),
+            'cascade_sizes': cascade_sizes,
+            'temporal_patterns': temporal_patterns
+        }

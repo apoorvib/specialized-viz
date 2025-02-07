@@ -1958,3 +1958,729 @@ class NetworkVisualizerExtension(NetworkVisualizer):
             t**2 * end[1])
         
         return x.tolist(), y.tolist()
+
+    def visualize_regime_transitions(self) -> go.Figure:
+        """Create visualization of regime transition characteristics."""
+        if not hasattr(self.network_builder, 'regime_data'):
+            raise ValueError("Regime data not available")
+            
+        fig = make_subplots(
+            rows=2, cols=2,
+            subplot_titles=(
+                'Transition Matrix',
+                'Transition Duration Distribution',
+                'Stability Analysis',
+                'Regime Characteristics Evolution'
+            )
+        )
+        
+        regime_transitions = self._calculate_regime_transitions()
+        
+        # 1. Transition Matrix
+        fig.add_trace(
+            go.Heatmap(
+                z=regime_transitions['matrix'].values,
+                x=regime_transitions['matrix'].columns,
+                y=regime_transitions['matrix'].index,
+                colorscale='RdBu',
+                text=np.round(regime_transitions['matrix'].values, 2),
+                texttemplate='%{text}',
+                textfont={"size": 10},
+                colorbar=dict(title='Transition Probability')
+            ),
+            row=1, col=1
+        )
+        
+        # 2. Duration Distribution
+        durations = regime_transitions['durations']
+        fig.add_trace(
+            go.Histogram(
+                x=durations,
+                nbinsx=20,
+                name='Duration Distribution',
+                marker_color=self.config.color_scheme['primary']
+            ),
+            row=1, col=2
+        )
+        
+        # 3. Stability Analysis
+        stability = regime_transitions['stability']
+        fig.add_trace(
+            go.Scatter(
+                x=stability.index,
+                y=stability['stability_score'],
+                mode='lines+markers',
+                name='Regime Stability',
+                line=dict(color=self.config.color_scheme['secondary'])
+            ),
+            row=2, col=1
+        )
+        
+        # 4. Characteristics Evolution
+        characteristics = regime_transitions['characteristics']
+        for metric in ['volatility', 'trend', 'volume']:
+            fig.add_trace(
+                go.Scatter(
+                    x=characteristics.index,
+                    y=characteristics[metric],
+                    name=metric.capitalize(),
+                    line=dict(shape='spline', smoothing=0.3)
+                ),
+                row=2, col=2
+            )
+        
+        # Update layout
+        fig.update_layout(
+            height=800,
+            width=1200,
+            showlegend=True,
+            title_text="Regime Transition Analysis"
+        )
+        
+        return fig
+
+    def analyze_regime_stability(self) -> Dict[str, pd.DataFrame]:
+        """Analyze stability of different market regimes."""
+        if not hasattr(self.network_builder, 'regime_data'):
+            raise ValueError("Regime data not available")
+        
+        stability_metrics = {}
+        
+        # Network stability metrics for each regime
+        network_metrics = self._calculate_network_stability_by_regime()
+        stability_metrics['network'] = network_metrics
+        
+        # Pattern stability metrics
+        if self.pattern_integration:
+            pattern_metrics = self._calculate_pattern_stability_by_regime()
+            stability_metrics['patterns'] = pattern_metrics
+        
+        # Correlation stability
+        correlation_metrics = self._calculate_correlation_stability_by_regime()
+        stability_metrics['correlations'] = correlation_metrics
+        
+        return stability_metrics
+
+    def create_regime_pattern_analysis(self) -> go.Figure:
+        """Analyze pattern behavior across different regimes."""
+        if not (self.pattern_integration and hasattr(self.network_builder, 'regime_data')):
+            raise ValueError("Pattern integration and regime data required")
+            
+        fig = make_subplots(
+            rows=2, cols=2,
+            subplot_titles=(
+                'Pattern Success by Regime',
+                'Regime-Pattern Network',
+                'Pattern Transition Analysis',
+                'Regime Influence on Patterns'
+            )
+        )
+        
+        # 1. Pattern Success Analysis
+        success_metrics = self._calculate_pattern_success_by_regime()
+        fig.add_trace(
+            go.Heatmap(
+                z=success_metrics.values,
+                x=success_metrics.columns,
+                y=success_metrics.index,
+                colorscale='RdYlGn',
+                colorbar=dict(title='Success Rate')
+            ),
+            row=1, col=1
+        )
+        
+        # 2. Regime-Pattern Network
+        regime_pattern_network = self._create_regime_pattern_network()
+        self._add_network_to_subplot(regime_pattern_network, fig, row=1, col=2)
+        
+        # 3. Pattern Transition Analysis
+        transition_metrics = self._analyze_pattern_transitions()
+        fig.add_trace(
+            go.Scatter(
+                x=transition_metrics.index,
+                y=transition_metrics['transition_score'],
+                mode='lines+markers',
+                name='Pattern Transitions',
+                marker=dict(
+                    color=transition_metrics['regime_change'],
+                    colorscale='Viridis',
+                    showscale=True,
+                    colorbar=dict(title='Regime Change')
+                )
+            ),
+            row=2, col=1
+        )
+        
+        # 4. Regime Influence
+        influence_metrics = self._calculate_regime_pattern_influence()
+        fig.add_trace(
+            go.Bar(
+                x=influence_metrics.index,
+                y=influence_metrics['influence_score'],
+                marker_color=self.config.color_scheme['primary'],
+                name='Regime Influence'
+            ),
+            row=2, col=2
+        )
+        
+        # Update layout
+        fig.update_layout(
+            height=900,
+            width=1200,
+            showlegend=True,
+            title_text="Regime-Pattern Analysis"
+        )
+        
+        return fig
+
+    def _calculate_regime_transitions(self) -> Dict:
+        """Calculate regime transition metrics."""
+        regimes = self.network_builder.regime_data
+        transitions = {
+            'matrix': pd.DataFrame(),
+            'durations': [],
+            'stability': pd.DataFrame(),
+            'characteristics': pd.DataFrame()
+        }
+        
+        # Calculate transition matrix
+        unique_regimes = list(set(r['name'] for r in regimes))
+        matrix = pd.DataFrame(0, index=unique_regimes, columns=unique_regimes)
+        
+        for i in range(len(regimes) - 1):
+            curr_regime = regimes[i]['name']
+            next_regime = regimes[i+1]['name']
+            matrix.loc[curr_regime, next_regime] += 1
+        
+        # Normalize to probabilities
+        transitions['matrix'] = matrix.div(matrix.sum(axis=1), axis=0)
+        
+        # Calculate durations
+        transitions['durations'] = [
+            (r['end_date'] - r['start_date']).days
+            for r in regimes
+        ]
+        
+        # Calculate stability scores
+        stability = pd.DataFrame(index=pd.date_range(
+            start=regimes[0]['start_date'],
+            end=regimes[-1]['end_date'],
+            freq='D'
+        ))
+        
+        stability['regime'] = None
+        for regime in regimes:
+            mask = (stability.index >= regime['start_date']) & (stability.index <= regime['end_date'])
+            stability.loc[mask, 'regime'] = regime['name']
+        
+        stability['stability_score'] = stability['regime'].map(
+            transitions['matrix'].diagonal()
+        )
+        
+        transitions['stability'] = stability
+        
+        # Calculate characteristics evolution
+        characteristics = pd.DataFrame(index=stability.index)
+        for metric in ['volatility', 'trend', 'volume']:
+            characteristics[metric] = None
+            for regime in regimes:
+                mask = (characteristics.index >= regime['start_date']) & (characteristics.index <= regime['end_date'])
+                characteristics.loc[mask, metric] = self._normalize_characteristic(
+                    regime['characteristics'].get(metric, 'medium')
+                )
+        
+        transitions['characteristics'] = characteristics
+        
+        return transitions
+    
+    def analyze_regime_indicators(self) -> go.Figure:
+        """Analyze and visualize regime indicators and their relationships."""
+        fig = make_subplots(
+            rows=2, cols=2,
+            subplot_titles=(
+                'Leading Regime Indicators',
+                'Indicator Relationships',
+                'Regime Change Probability',
+                'Indicator Stability'
+            )
+        )
+        
+        # Calculate regime indicators
+        indicators = self._calculate_regime_indicators()
+        
+        # 1. Leading Regime Indicators
+        for indicator, values in indicators['leading'].items():
+            fig.add_trace(
+                go.Scatter(
+                    x=values.index,
+                    y=values.values,
+                    name=indicator,
+                    mode='lines',
+                    line=dict(shape='spline', smoothing=0.3)
+                ),
+                row=1, col=1
+            )
+        
+        # 2. Indicator Relationships
+        correlation_matrix = pd.DataFrame(indicators['correlations'])
+        fig.add_trace(
+            go.Heatmap(
+                z=correlation_matrix.values,
+                x=correlation_matrix.columns,
+                y=correlation_matrix.index,
+                colorscale='RdBu',
+                zmid=0,
+                colorbar=dict(title='Correlation')
+            ),
+            row=1, col=2
+        )
+        
+        # 3. Regime Change Probability
+        fig.add_trace(
+            go.Scatter(
+                x=indicators['change_probability'].index,
+                y=indicators['change_probability'].values,
+                name='Change Probability',
+                fill='tozeroy',
+                line=dict(color=self.config.color_scheme['primary'])
+            ),
+            row=2, col=1
+        )
+        
+        # 4. Indicator Stability
+        stability_scores = indicators['stability']
+        fig.add_trace(
+            go.Bar(
+                x=stability_scores.index,
+                y=stability_scores.values,
+                name='Indicator Stability',
+                marker_color=self.config.color_scheme['secondary']
+            ),
+            row=2, col=2
+        )
+        
+        # Update layout
+        fig.update_layout(
+            height=800,
+            width=1200,
+            showlegend=True,
+            title_text="Regime Indicator Analysis"
+        )
+        
+        return fig
+
+    def detect_regime_transitions(self) -> pd.DataFrame:
+        """Detect regime transitions using multiple indicators."""
+        if not hasattr(self.network_builder, 'data'):
+            raise ValueError("Network data not available")
+        
+        # Initialize results DataFrame
+        results = pd.DataFrame(index=next(iter(self.network_builder.data.values())).index)
+        
+        # Calculate network-based indicators
+        network_indicators = self._calculate_network_indicators()
+        
+        # Calculate market-based indicators
+        market_indicators = self._calculate_market_indicators()
+        
+        # Combine indicators
+        for name, indicator in {**network_indicators, **market_indicators}.items():
+            results[name] = indicator
+        
+        # Detect regime changes
+        results['regime_change'] = self._detect_indicator_changes(results)
+        
+        # Calculate transition probability
+        results['transition_probability'] = self._calculate_transition_probability(results)
+        
+        return results
+
+    def create_regime_comparison_view(self) -> go.Figure:
+        """Create comparative visualization of different market regimes."""
+        if not hasattr(self.network_builder, 'regime_data'):
+            raise ValueError("Regime data not available")
+            
+        fig = make_subplots(
+            rows=2, cols=2,
+            subplot_titles=(
+                'Network Structure by Regime',
+                'Pattern Behavior Comparison',
+                'Correlation Structure',
+                'Regime Characteristics'
+            ),
+            specs=[
+                [{'type': 'scatter'}, {'type': 'scatter'}],
+                [{'type': 'heatmap'}, {'type': 'scatter'}]
+            ]
+        )
+        
+        regimes = self.network_builder.regime_data
+        
+        # 1. Network Structure Comparison
+        network_metrics = self._calculate_network_metrics_by_regime()
+        self._add_network_structure_comparison(fig, network_metrics, row=1, col=1)
+        
+        # 2. Pattern Behavior
+        if self.pattern_integration:
+            pattern_metrics = self._calculate_pattern_metrics_by_regime()
+            self._add_pattern_behavior_comparison(fig, pattern_metrics, row=1, col=2)
+        
+        # 3. Correlation Structure
+        correlation_metrics = self._calculate_correlation_metrics_by_regime()
+        fig.add_trace(
+            go.Heatmap(
+                z=correlation_metrics['matrix'],
+                x=correlation_metrics['labels'],
+                y=correlation_metrics['labels'],
+                colorscale='RdBu',
+                zmid=0
+            ),
+            row=2, col=1
+        )
+        
+        # 4. Regime Characteristics
+        characteristics = self._extract_regime_characteristics()
+        for metric, values in characteristics.items():
+            fig.add_trace(
+                go.Box(
+                    y=values,
+                    x=[metric] * len(values),
+                    name=metric,
+                    boxpoints='all',
+                    jitter=0.3,
+                    pointpos=-1.8
+                ),
+                row=2, col=2
+            )
+        
+        # Update layout
+        fig.update_layout(
+            height=1000,
+            width=1400,
+            showlegend=True,
+            title_text="Market Regime Comparison"
+        )
+        
+        return fig
+
+    def _calculate_regime_indicators(self) -> Dict:
+        """Calculate various regime indicators."""
+        # Initialize results
+        results = {
+            'leading': {},
+            'correlations': pd.DataFrame(),
+            'change_probability': pd.Series(),
+            'stability': pd.Series()
+        }
+        
+        # Network-based indicators
+        network_metrics = self._calculate_network_metrics_by_regime()
+        
+        # Market-based indicators
+        market_metrics = self._calculate_market_metrics_by_regime()
+        
+        # Combine indicators
+        all_metrics = {**network_metrics, **market_metrics}
+        
+        # Calculate correlations
+        results['correlations'] = pd.DataFrame(all_metrics).corr()
+        
+        # Calculate leading indicators
+        for name, values in all_metrics.items():
+            # Check if indicator leads regime changes
+            lead_correlation = self._calculate_lead_correlation(
+                values, self.network_builder.regime_data
+            )
+            if abs(lead_correlation) > 0.6:  # Threshold for leading indicators
+                results['leading'][name] = values
+        
+        # Calculate change probability
+        results['change_probability'] = self._calculate_change_probability(all_metrics)
+        
+        # Calculate indicator stability
+        results['stability'] = self._calculate_indicator_stability(all_metrics)
+        
+        return results
+    
+    def create_scenario_dashboard(self) -> go.Figure:
+        """Create interactive dashboard for scenario analysis."""
+        fig = make_subplots(
+            rows=2, cols=2,
+            subplot_titles=(
+                'Network Impact Analysis',
+                'Pattern Propagation Scenarios',
+                'Stress Test Results',
+                'Risk Analysis'
+            ),
+            specs=[
+                [{'type': 'scatter3d'}, {'type': 'scatter'}],
+                [{'type': 'heatmap'}, {'type': 'scatter'}]
+            ]
+        )
+        
+        # 1. Network Impact Analysis - 3D visualization of impact scenarios
+        impact_scenarios = self._generate_impact_scenarios()
+        fig.add_trace(
+            go.Scatter3d(
+                x=impact_scenarios['centrality'],
+                y=impact_scenarios['connectivity'],
+                z=impact_scenarios['stability'],
+                mode='markers',
+                marker=dict(
+                    size=8,
+                    color=impact_scenarios['impact_score'],
+                    colorscale='Viridis',
+                    opacity=0.8
+                ),
+                text=impact_scenarios['scenario_description'],
+                hoverinfo='text'
+            ),
+            row=1, col=1
+        )
+        
+        # 2. Pattern Propagation Scenarios
+        propagation_scenarios = self._analyze_propagation_scenarios()
+        for scenario, data in propagation_scenarios.items():
+            fig.add_trace(
+                go.Scatter(
+                    x=data.index,
+                    y=data['propagation_rate'],
+                    name=scenario,
+                    mode='lines',
+                    line=dict(dash='solid' if data['is_baseline'] else 'dash')
+                ),
+                row=1, col=2
+            )
+        
+        # 3. Stress Test Results
+        stress_results = self._perform_stress_tests()
+        fig.add_trace(
+            go.Heatmap(
+                z=stress_results['impact_matrix'],
+                x=stress_results['stress_levels'],
+                y=stress_results['metrics'],
+                colorscale='RdYlBu_r',
+                colorbar=dict(title='Impact Severity')
+            ),
+            row=2, col=1
+        )
+        
+        # 4. Risk Analysis
+        risk_metrics = self._calculate_risk_metrics()
+        fig.add_trace(
+            go.Scatter(
+                x=risk_metrics.index,
+                y=risk_metrics['risk_score'],
+                mode='lines+markers',
+                name='Risk Score',
+                line=dict(color=self.config.color_scheme['primary'])
+            ),
+            row=2, col=2
+        )
+        
+        # Add confidence intervals to risk analysis
+        fig.add_trace(
+            go.Scatter(
+                x=risk_metrics.index.tolist() + risk_metrics.index.tolist()[::-1],
+                y=risk_metrics['upper_bound'].tolist() + risk_metrics['lower_bound'].tolist()[::-1],
+                fill='toself',
+                fillcolor='rgba(0,100,80,0.2)',
+                line=dict(color='rgba(255,255,255,0)'),
+                hoverinfo='skip',
+                showlegend=False
+            ),
+            row=2, col=2
+        )
+        
+        # Update layout with interactive elements
+        fig.update_layout(
+            height=1000,
+            width=1400,
+            showlegend=True,
+            title_text="Interactive Scenario Analysis",
+            updatemenus=[
+                dict(
+                    type="buttons",
+                    direction="left",
+                    buttons=list([
+                        dict(
+                            args=[{"visible": [True] * len(fig.data)}],
+                            label="All Scenarios",
+                            method="restyle"
+                        ),
+                        dict(
+                            args=[{"visible": [i == 0 for i in range(len(fig.data))]}],
+                            label="Baseline",
+                            method="restyle"
+                        )
+                    ]),
+                    pad={"r": 10, "t": 10},
+                    showactive=True,
+                    x=0.11,
+                    xanchor="left",
+                    y=1.1,
+                    yanchor="top"
+                )
+            ]
+        )
+        
+        return fig
+
+    def simulate_node_removal_scenario(self, nodes: List[str], 
+                                    n_steps: int = 10) -> go.Figure:
+        """Simulate and visualize impact of removing specific nodes.
+        
+        Args:
+            nodes: List of nodes to remove
+            n_steps: Number of steps in simulation
+            
+        Returns:
+            go.Figure: Visualization of removal impact
+        """
+        fig = make_subplots(rows=1, cols=2,
+                        subplot_titles=('Network Evolution', 'Impact Metrics'))
+        
+        # Create copy of network for simulation
+        G = self.network_builder.graph.copy()
+        
+        # Track metrics over simulation steps
+        metrics = {
+            'connectivity': [],
+            'centralization': [],
+            'efficiency': [],
+            'step': []
+        }
+        
+        # Run simulation
+        nodes_per_step = max(1, len(nodes) // n_steps)
+        for step in range(n_steps):
+            # Remove batch of nodes
+            start_idx = step * nodes_per_step
+            end_idx = min(start_idx + nodes_per_step, len(nodes))
+            nodes_to_remove = nodes[start_idx:end_idx]
+            
+            # Update network
+            G.remove_nodes_from(nodes_to_remove)
+            
+            # Calculate metrics
+            metrics['step'].append(step)
+            metrics['connectivity'].append(nx.node_connectivity(G))
+            metrics['centralization'].append(
+                self._calculate_centralization(G)
+            )
+            metrics['efficiency'].append(nx.global_efficiency(G))
+            
+            # Visualize network state
+            self._add_network_state_to_subplot(
+                G, fig, step, n_steps, row=1, col=1
+            )
+        
+        # Plot impact metrics
+        for metric in ['connectivity', 'centralization', 'efficiency']:
+            fig.add_trace(
+                go.Scatter(
+                    x=metrics['step'],
+                    y=metrics[metric],
+                    name=metric.capitalize(),
+                    mode='lines+markers'
+                ),
+                row=1, col=2
+            )
+        
+        # Update layout
+        fig.update_layout(
+            height=600,
+            width=1200,
+            title_text="Node Removal Impact Simulation",
+            showlegend=True
+        )
+        
+        return fig
+
+    def simulate_pattern_propagation(self, 
+                                pattern_type: str,
+                                initial_nodes: List[str],
+                                n_steps: int = 20) -> go.Figure:
+        """Simulate pattern propagation through network.
+        
+        Args:
+            pattern_type: Type of pattern to simulate
+            initial_nodes: Initial nodes with pattern
+            n_steps: Number of simulation steps
+            
+        Returns:
+            go.Figure: Pattern propagation visualization
+        """
+        if not self.pattern_integration:
+            raise ValueError("Pattern integration required")
+            
+        fig = make_subplots(
+            rows=2, cols=2,
+            subplot_titles=(
+                'Propagation Network',
+                'Adoption Rate',
+                'Node States',
+                'Cascade Analysis'
+            )
+        )
+        
+        # Run propagation simulation
+        simulation_results = self._run_propagation_simulation(
+            pattern_type, initial_nodes, n_steps
+        )
+        
+        # 1. Visualize propagation network
+        network_states = simulation_results['network_states']
+        for step in range(n_steps):
+            self._add_propagation_network_state(
+                network_states[step], fig, step, row=1, col=1
+            )
+        
+        # 2. Plot adoption rate
+        adoption_rate = simulation_results['adoption_rate']
+        fig.add_trace(
+            go.Scatter(
+                x=list(range(n_steps)),
+                y=adoption_rate,
+                name='Adoption Rate',
+                mode='lines+markers',
+                line=dict(color=self.config.color_scheme['primary'])
+            ),
+            row=1, col=2
+        )
+        
+        # 3. Visualize node states
+        node_states = simulation_results['node_states']
+        fig.add_trace(
+            go.Heatmap(
+                z=node_states,
+                x=list(range(n_steps)),
+                y=list(self.network_builder.graph.nodes()),
+                colorscale='Viridis',
+                colorbar=dict(title='State')
+            ),
+            row=2, col=1
+        )
+        
+        # 4. Cascade analysis
+        cascade_metrics = simulation_results['cascade_metrics']
+        fig.add_trace(
+            go.Scatter(
+                x=list(range(n_steps)),
+                y=cascade_metrics['cascade_size'],
+                name='Cascade Size',
+                mode='lines',
+                line=dict(color=self.config.color_scheme['secondary'])
+            ),
+            row=2, col=2
+        )
+        
+        # Update layout
+        fig.update_layout(
+            height=800,
+            width=1200,
+            showlegend=True,
+            title_text=f"Pattern Propagation Simulation - {pattern_type}"
+        )
+        
+        return fig

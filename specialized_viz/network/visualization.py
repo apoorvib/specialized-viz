@@ -3111,3 +3111,908 @@ class NetworkVisualizerExtension(NetworkVisualizer):
             self._historical_metrics.pop(0)
         
         return changes
+    
+    def create_alert_visualization(self) -> go.Figure:
+        """Create visualization of network alerts and changes."""
+        fig = make_subplots(
+            rows=2, cols=2,
+            subplot_titles=(
+                'Alert Timeline',
+                'Metric Changes',
+                'Alert Severity Distribution',
+                'Change Point Analysis'
+            )
+        )
+        
+        # Get alert data
+        alerts = self._gather_network_alerts()
+        
+        # 1. Alert Timeline
+        for alert_type, data in alerts['timeline'].items():
+            fig.add_trace(
+                go.Scatter(
+                    x=data['timestamp'],
+                    y=data['severity'],
+                    name=alert_type,
+                    mode='markers+lines',
+                    marker=dict(
+                        size=10,
+                        symbol='circle',
+                        color=self._get_alert_color(alert_type)
+                    )
+                ),
+                row=1, col=1
+            )
+        
+        # 2. Metric Changes
+        metrics_df = pd.DataFrame(alerts['metrics'])
+        for metric in metrics_df.columns:
+            fig.add_trace(
+                go.Scatter(
+                    x=metrics_df.index,
+                    y=metrics_df[metric],
+                    name=metric,
+                    line=dict(shape='spline', smoothing=0.3)
+                ),
+                row=1, col=2
+            )
+        
+        # 3. Alert Severity Distribution
+        fig.add_trace(
+            go.Histogram(
+                x=alerts['severity_distribution'],
+                nbinsx=20,
+                name='Severity Distribution',
+                marker_color=self.config.color_scheme['primary']
+            ),
+            row=2, col=1
+        )
+        
+        # 4. Change Point Analysis
+        changepoints = self._detect_change_points(metrics_df)
+        fig.add_trace(
+            go.Scatter(
+                x=changepoints['timestamp'],
+                y=changepoints['magnitude'],
+                mode='markers',
+                marker=dict(
+                    size=12,
+                    color=changepoints['significance'],
+                    colorscale='Viridis',
+                    showscale=True
+                ),
+                name='Change Points'
+            ),
+            row=2, col=2
+        )
+        
+        # Update layout
+        fig.update_layout(
+            height=800,
+            width=1200,
+            showlegend=True,
+            title_text="Network Alert Analysis"
+        )
+        
+        return fig
+
+    def _gather_network_alerts(self) -> Dict:
+        """Gather and analyze network alerts."""
+        alerts = {
+            'timeline': defaultdict(lambda: {'timestamp': [], 'severity': []}),
+            'metrics': [],
+            'severity_distribution': []
+        }
+        
+        # Analyze structural changes
+        changes = self.detect_structural_changes()
+        
+        # Process each change into alerts
+        for change in changes:
+            alert_type = self._classify_alert(change)
+            severity = self._calculate_alert_severity(change)
+            
+            alerts['timeline'][alert_type]['timestamp'].append(change['timestamp'])
+            alerts['timeline'][alert_type]['severity'].append(severity)
+            alerts['severity_distribution'].append(severity)
+            
+            # Track metric changes
+            alerts['metrics'].append({
+                'timestamp': change['timestamp'],
+                'metric': change['metric'],
+                'value': change['new_value']
+            })
+        
+        return alerts
+
+    def _classify_alert(self, change: Dict) -> str:
+        """Classify type of network alert."""
+        metric = change['metric']
+        change_pct = abs(change['change'])
+        
+        if metric == 'density':
+            if change_pct > 0.2:
+                return 'major_structural'
+            return 'minor_structural'
+            
+        elif metric == 'centralization':
+            if change_pct > 0.15:
+                return 'centrality_shift'
+            return 'centrality_drift'
+            
+        elif metric == 'modularity':
+            if change_pct > 0.1:
+                return 'community_change'
+            return 'community_drift'
+            
+        return 'general_change'
+
+    def _calculate_alert_severity(self, change: Dict) -> float:
+        """Calculate severity score for an alert."""
+        # Base severity on change magnitude
+        base_severity = abs(change['change'])
+        
+        # Adjust based on metric importance
+        metric_weights = {
+            'density': 1.0,
+            'centralization': 0.8,
+            'modularity': 0.7,
+            'avg_clustering': 0.6,
+            'diameter': 0.5
+        }
+        
+        weight = metric_weights.get(change['metric'], 0.5)
+        severity = base_severity * weight
+        
+        # Normalize to [0, 1]
+        return min(1.0, severity)
+
+    def _detect_change_points(self, metrics_df: pd.DataFrame) -> pd.DataFrame:
+        """Detect significant change points in network metrics."""
+        changepoints = pd.DataFrame(columns=['timestamp', 'magnitude', 'significance'])
+        
+        for column in metrics_df.columns:
+            series = metrics_df[column]
+            
+            # Calculate rolling statistics
+            rolling_mean = series.rolling(window=5).mean()
+            rolling_std = series.rolling(window=5).std()
+            
+            # Detect points outside 2 standard deviations
+            significant_changes = abs(series - rolling_mean) > (2 * rolling_std)
+            
+            if significant_changes.any():
+                changes = pd.DataFrame({
+                    'timestamp': series.index[significant_changes],
+                    'magnitude': abs(series[significant_changes] - rolling_mean[significant_changes]),
+                    'significance': abs(
+                        series[significant_changes] - rolling_mean[significant_changes]
+                    ) / rolling_std[significant_changes]
+                })
+                
+                changepoints = pd.concat([changepoints, changes])
+        
+        return changepoints.sort_values('timestamp')
+
+    def _get_alert_color(self, alert_type: str) -> str:
+        """Get color for alert type."""
+        color_map = {
+            'major_structural': '#e74c3c',  # Red
+            'minor_structural': '#f39c12',  # Orange
+            'centrality_shift': '#9b59b6',  # Purple
+            'centrality_drift': '#3498db',  # Blue
+            'community_change': '#2ecc71',  # Green
+            'community_drift': '#95a5a6',   # Gray
+            'general_change': '#7f8c8d'     # Dark Gray
+        }
+        
+        return color_map.get(alert_type, '#7f8c8d')
+
+    def create_network_summary(self) -> Dict:
+        """Create comprehensive summary of network state and changes."""
+        summary = {
+            'current_state': self.update_network_metrics(),
+            'changes': self.detect_structural_changes(),
+            'alerts': self._gather_network_alerts(),
+            'stability': self._calculate_network_stability(
+                self.network_builder.graph
+            )
+        }
+        
+        # Add trend analysis
+        if hasattr(self, '_historical_metrics') and len(self._historical_metrics) > 1:
+            trends = {}
+            for metric in summary['current_state'].keys():
+                values = [m[metric] for m in self._historical_metrics]
+                slope, _, r_value, _, _ = stats.linregress(
+                    range(len(values)),
+                    values
+                )
+                trends[metric] = {
+                    'slope': slope,
+                    'r_squared': r_value ** 2,
+                    'direction': 'increasing' if slope > 0 else 'decreasing'
+                }
+            summary['trends'] = trends
+        
+        return summary
+    
+    def create_pattern_based_visualization(self, pattern_type: str = None) -> go.Figure:
+        """Create visualization colored and sized by pattern characteristics.
+        
+        Args:
+            pattern_type: Optional specific pattern to visualize
+            
+        Returns:
+            go.Figure: Pattern-based network visualization
+        """
+        if not self.pattern_integration:
+            raise ValueError("Pattern integration required")
+            
+        fig = make_subplots(
+            rows=2, cols=2,
+            subplot_titles=(
+                'Pattern Network',
+                'Pattern Distribution',
+                'Temporal Evolution',
+                'Pattern Correlations'
+            )
+        )
+        
+        # Get pattern data
+        if pattern_type:
+            patterns = {pattern_type: self.pattern_integration.analyze_pattern_propagation(pattern_type)}
+        else:
+            patterns = self._get_all_pattern_data()
+        
+        # 1. Pattern Network
+        pos = self._create_pattern_layout()
+        
+        # Add edges with pattern-based weights
+        edge_weights = self._calculate_pattern_edge_weights(patterns)
+        edge_trace = self._create_weighted_edge_trace(pos, edge_weights)
+        fig.add_trace(edge_trace, row=1, col=1)
+        
+        # Add nodes with pattern-based colors
+        node_colors = self._calculate_pattern_node_colors(patterns)
+        node_sizes = self._calculate_pattern_node_sizes(patterns)
+        node_trace = self._create_pattern_node_trace(pos, node_colors, node_sizes)
+        fig.add_trace(node_trace, row=1, col=1)
+        
+        # 2. Pattern Distribution
+        pattern_dist = self._calculate_pattern_distribution(patterns)
+        fig.add_trace(
+            go.Bar(
+                x=list(pattern_dist.keys()),
+                y=list(pattern_dist.values()),
+                marker_color=self.config.color_scheme['primary']
+            ),
+            row=1, col=2
+        )
+        
+        # 3. Temporal Evolution
+        temporal_data = self._analyze_pattern_temporal_evolution(patterns)
+        for pattern, data in temporal_data.items():
+            fig.add_trace(
+                go.Scatter(
+                    x=data.index,
+                    y=data['occurrence'],
+                    name=pattern,
+                    mode='lines',
+                    line=dict(shape='spline', smoothing=0.3)
+                ),
+                row=2, col=1
+            )
+        
+        # 4. Pattern Correlations
+        correlation_matrix = self._calculate_pattern_correlations(patterns)
+        fig.add_trace(
+            go.Heatmap(
+                z=correlation_matrix.values,
+                x=correlation_matrix.columns,
+                y=correlation_matrix.index,
+                colorscale='RdBu',
+                zmid=0
+            ),
+            row=2, col=2
+        )
+        
+        # Update layout
+        fig.update_layout(
+            height=900,
+            width=1200,
+            title_text=f"Pattern-Based Network Analysis{f' - {pattern_type}' if pattern_type else ''}",
+            showlegend=True
+        )
+        
+        return fig
+
+    def _create_pattern_layout(self) -> Dict:
+        """Create network layout optimized for pattern visualization."""
+        G = self.network_builder.graph
+        
+        # Use ForceAtlas2 layout for better cluster separation
+        pos = nx.spring_layout(
+            G,
+            k=2/np.sqrt(len(G.nodes())),
+            iterations=100,
+            seed=self.config.layout_seed
+        )
+        
+        # Adjust positions to spread clusters
+        communities = self.network_builder.detect_communities()
+        for node in G.nodes():
+            community = communities[node]
+            # Add small perturbation based on community
+            pos[node][0] += 0.1 * np.cos(2 * np.pi * community / len(set(communities.values())))
+            pos[node][1] += 0.1 * np.sin(2 * np.pi * community / len(set(communities.values())))
+        
+        return pos
+
+    def _calculate_pattern_edge_weights(self, patterns: Dict) -> Dict:
+        """Calculate edge weights based on pattern co-occurrence."""
+        G = self.network_builder.graph
+        weights = {}
+        
+        for edge in G.edges():
+            u, v = edge
+            # Calculate pattern similarity between nodes
+            similarity = 0
+            count = 0
+            for pattern_data in patterns.values():
+                if u in pattern_data and v in pattern_data:
+                    u_pattern = pattern_data[u]
+                    v_pattern = pattern_data[v]
+                    if isinstance(u_pattern, pd.Series) and isinstance(v_pattern, pd.Series):
+                        similarity += u_pattern.corr(v_pattern)
+                        count += 1
+            
+            weights[edge] = similarity / count if count > 0 else 0
+        
+        return weights
+
+    def _calculate_pattern_node_colors(self, patterns: Dict) -> Dict:
+        """Calculate node colors based on pattern characteristics."""
+        G = self.network_builder.graph
+        colors = {}
+        
+        for node in G.nodes():
+            # Calculate average pattern strength
+            strengths = []
+            for pattern_data in patterns.values():
+                if node in pattern_data:
+                    pattern_strength = pattern_data[node].mean() if isinstance(pattern_data[node], pd.Series) else 0
+                    strengths.append(pattern_strength)
+            
+            colors[node] = np.mean(strengths) if strengths else 0
+        
+        return colors
+
+    def _calculate_pattern_node_sizes(self, patterns: Dict) -> Dict:
+        """Calculate node sizes based on pattern occurrence frequency."""
+        G = self.network_builder.graph
+        sizes = {}
+        
+        for node in G.nodes():
+            # Count pattern occurrences
+            count = 0
+            for pattern_data in patterns.values():
+                if node in pattern_data:
+                    count += sum(1 for x in pattern_data[node] if x > 0) if isinstance(pattern_data[node], pd.Series) else 0
+            
+            # Scale size between min and max size limits
+            min_size, max_size = self.config.node_size_range
+            sizes[node] = min_size + (count / max(1, max(sizes.values()))) * (max_size - min_size)
+        
+        return sizes
+
+    def _create_pattern_node_trace(self, pos: Dict, colors: Dict, sizes: Dict) -> go.Scatter:
+        """Create node trace with pattern-based styling."""
+        node_x = []
+        node_y = []
+        node_colors_list = []
+        node_sizes_list = []
+        node_text = []
+        
+        for node in self.network_builder.graph.nodes():
+            x, y = pos[node]
+            node_x.append(x)
+            node_y.append(y)
+            node_colors_list.append(colors[node])
+            node_sizes_list.append(sizes[node])
+            
+            # Create hover text
+            text = (f"Node: {node}<br>"
+                    f"Pattern Strength: {colors[node]:.2f}<br>"
+                    f"Pattern Count: {sizes[node]:.0f}")
+            node_text.append(text)
+        
+        return go.Scatter(
+            x=node_x,
+            y=node_y,
+            mode='markers+text' if self.config.show_labels else 'markers',
+            text=[str(node) for node in self.network_builder.graph.nodes()]
+                if self.config.show_labels else None,
+            textposition='top center',
+            hovertext=node_text,
+            marker=dict(
+                size=node_sizes_list,
+                color=node_colors_list,
+                colorscale='Viridis',
+                showscale=True,
+                colorbar=dict(title='Pattern Strength')
+            ),
+            name='Nodes'
+        )
+
+    def create_community_evolution_view(self, time_window: int = 30) -> go.Figure:
+        """Create visualization of community evolution over time.
+        
+        Args:
+            time_window: Number of time periods to analyze
+            
+        Returns:
+            go.Figure: Community evolution visualization
+        """
+        fig = make_subplots(
+            rows=2, cols=2,
+            subplot_titles=(
+                'Community Structure Evolution',
+                'Community Metrics',
+                'Transition Analysis',
+                'Stability Heatmap'
+            )
+        )
+        
+        # Track community evolution
+        evolution_data = self._track_community_evolution(time_window)
+        
+        # 1. Community Structure Evolution
+        community_changes = evolution_data['changes']
+        for community_id, data in community_changes.items():
+            fig.add_trace(
+                go.Scatter(
+                    x=data['timestamps'],
+                    y=data['size'],
+                    name=f'Community {community_id}',
+                    mode='lines',
+                    line=dict(shape='spline', smoothing=0.3)
+                ),
+                row=1, col=1
+            )
+        
+        # 2. Community Metrics
+        metrics = evolution_data['metrics']
+        for metric, values in metrics.items():
+            fig.add_trace(
+                go.Scatter(
+                    x=values.index,
+                    y=values.values,
+                    name=metric,
+                    line=dict(dash='solid' if 'modularity' in metric else 'dash')
+                ),
+                row=1, col=2
+            )
+        
+        # 3. Transition Analysis
+        transitions = evolution_data['transitions']
+        fig.add_trace(
+            go.Sankey(
+                node=dict(
+                    pad=15,
+                    thickness=20,
+                    line=dict(color="black", width=0.5),
+                    label=transitions['node_labels'],
+                    color=transitions['node_colors']
+                ),
+                link=dict(
+                    source=transitions['source'],
+                    target=transitions['target'],
+                    value=transitions['values']
+                )
+            ),
+            row=2, col=1
+        )
+        
+        # 4. Stability Heatmap
+        stability = evolution_data['stability']
+        fig.add_trace(
+            go.Heatmap(
+                z=stability.values,
+                x=stability.columns,
+                y=stability.index,
+                colorscale='RdYlBu',
+                colorbar=dict(title='Stability Score')
+            ),
+            row=2, col=2
+        )
+        
+        # Update layout
+        fig.update_layout(
+            height=1000,
+            width=1400,
+            showlegend=True,
+            title_text="Community Evolution Analysis"
+        )
+        
+        return fig
+
+    def _track_community_evolution(self, time_window: int) -> Dict:
+        """Track the evolution of communities over time."""
+        evolution_data = {
+            'changes': defaultdict(lambda: {'timestamps': [], 'size': []}),
+            'metrics': pd.DataFrame(),
+            'transitions': {
+                'node_labels': [],
+                'node_colors': [],
+                'source': [],
+                'target': [],
+                'values': []
+            },
+            'stability': pd.DataFrame()
+        }
+        
+        # Get temporal data
+        timestamps = list(next(iter(self.network_builder.data.values())).index)[-time_window:]
+        
+        # Track communities over time
+        previous_communities = None
+        community_tracking = {}  # Track community identity over time
+        
+        for timestamp in timestamps:
+            # Create network for this timestamp
+            current_data = {
+                asset: df.loc[:timestamp] 
+                for asset, df in self.network_builder.data.items()
+            }
+            current_network = NetworkBuilder(current_data, self.network_builder.config)
+            current_network.create_correlation_network()
+            
+            # Detect communities
+            current_communities = self.network_builder.detect_communities(
+                G=current_network.graph
+            )
+            
+            # Update community tracking
+            if previous_communities is not None:
+                self._update_community_tracking(
+                    previous_communities,
+                    current_communities,
+                    community_tracking,
+                    timestamp
+                )
+            
+            # Update evolution data
+            self._update_evolution_data(
+                evolution_data,
+                current_communities,
+                community_tracking,
+                timestamp,
+                current_network.graph
+            )
+            
+            previous_communities = current_communities
+        
+        # Calculate stability matrix
+        evolution_data['stability'] = self._calculate_community_stability_matrix(
+            evolution_data['changes']
+        )
+        
+        return evolution_data
+
+    def _update_community_tracking(self,
+                                prev_communities: Dict,
+                                curr_communities: Dict,
+                                tracking: Dict,
+                                timestamp: pd.Timestamp):
+        """Update community identity tracking."""
+        # Calculate community overlap
+        overlap_matrix = {}
+        for prev_id in set(prev_communities.values()):
+            prev_nodes = {n for n, c in prev_communities.items() if c == prev_id}
+            for curr_id in set(curr_communities.values()):
+                curr_nodes = {n for n, c in curr_communities.items() if c == curr_id}
+                overlap = len(prev_nodes & curr_nodes) / len(prev_nodes | curr_nodes)
+                overlap_matrix[(prev_id, curr_id)] = overlap
+        
+        # Update tracking based on maximum overlap
+        for prev_id in set(prev_communities.values()):
+            if prev_id not in tracking:
+                tracking[prev_id] = []
+            
+            # Find best matching current community
+            best_match = max(
+                [(curr_id, overlap) for (p_id, curr_id), overlap in overlap_matrix.items()
+                if p_id == prev_id],
+                key=lambda x: x[1]
+            )
+            
+            if best_match[1] > 0.5:  # Threshold for considering it the same community
+                tracking[prev_id].append((timestamp, best_match[0]))
+            else:
+                tracking[prev_id].append((timestamp, None))  # Community disappeared
+
+    def _update_evolution_data(self,
+                            evolution_data: Dict,
+                            communities: Dict,
+                            tracking: Dict,
+                            timestamp: pd.Timestamp,
+                            G: nx.Graph):
+        """Update evolution data with current state."""
+        # Update community sizes
+        for community_id in set(communities.values()):
+            size = sum(1 for c in communities.values() if c == community_id)
+            evolution_data['changes'][community_id]['timestamps'].append(timestamp)
+            evolution_data['changes'][community_id]['size'].append(size)
+        
+        # Update metrics
+        metrics = pd.Series({
+            'modularity': self._calculate_modularity(G, communities),
+            'num_communities': len(set(communities.values())),
+            'avg_size': np.mean([len([n for n, c in communities.items() if c == i])
+                            for i in set(communities.values())])
+        }, name=timestamp)
+        
+        evolution_data['metrics'] = evolution_data['metrics'].append(metrics)
+        
+        # Update transition data
+        if len(tracking) > 0:
+            current_mapping = {comm_id: track[-1][1] 
+                            for comm_id, track in tracking.items()
+                            if track[-1][1] is not None}
+            
+            for prev_id, curr_id in current_mapping.items():
+                if prev_id != curr_id:
+                    evolution_data['transitions']['source'].append(prev_id)
+                    evolution_data['transitions']['target'].append(curr_id)
+                    evolution_data['transitions']['values'].append(1)
+
+    def _calculate_community_stability_matrix(self, 
+                                            community_changes: Dict) -> pd.DataFrame:
+        """Calculate stability matrix for communities."""
+        communities = list(community_changes.keys())
+        stability = pd.DataFrame(index=communities, columns=communities)
+        
+        for c1 in communities:
+            for c2 in communities:
+                # Calculate correlation of size changes
+                sizes1 = pd.Series(
+                    community_changes[c1]['size'],
+                    index=community_changes[c1]['timestamps']
+                )
+                sizes2 = pd.Series(
+                    community_changes[c2]['size'],
+                    index=community_changes[c2]['timestamps']
+                )
+                
+                # Align series and calculate correlation
+                aligned = pd.concat([sizes1, sizes2], axis=1).dropna()
+                if len(aligned) > 1:
+                    stability.loc[c1, c2] = aligned.corr().iloc[0, 1]
+                else:
+                    stability.loc[c1, c2] = 0
+        
+        return stability
+
+    def create_custom_layout_visualization(self, layout_type: str = 'hierarchical') -> go.Figure:
+        """Create visualization with custom network layout.
+        
+        Args:
+            layout_type: Type of layout ('hierarchical', 'circular', 'spiral', 'multi_level')
+            
+        Returns:
+            go.Figure: Network visualization with custom layout
+        """
+        # Get positions based on layout type
+        if layout_type == 'hierarchical':
+            pos = self._create_hierarchical_layout()
+        elif layout_type == 'circular':
+            pos = self._create_circular_layout()
+        elif layout_type == 'spiral':
+            pos = self._create_spiral_layout()
+        elif layout_type == 'multi_level':
+            pos = self._create_multi_level_layout()
+        else:
+            raise ValueError(f"Unknown layout type: {layout_type}")
+        
+        fig = go.Figure()
+        
+        # Add edges with custom styling
+        edge_trace = self._create_custom_edge_trace(pos, layout_type)
+        fig.add_trace(edge_trace)
+        
+        # Add nodes with custom styling
+        node_trace = self._create_custom_node_trace(pos, layout_type)
+        fig.add_trace(node_trace)
+        
+        # Update layout based on type
+        self._update_layout_styling(fig, layout_type)
+        
+        return fig
+
+    def _create_hierarchical_layout(self) -> Dict:
+        """Create hierarchical layout based on node importance."""
+        G = self.network_builder.graph
+        
+        # Calculate node importance
+        centrality = nx.eigenvector_centrality_numpy(G)
+        
+        # Sort nodes by importance
+        sorted_nodes = sorted(
+            centrality.keys(),
+            key=lambda x: centrality[x],
+            reverse=True
+        )
+        
+        # Assign levels based on importance
+        n_levels = min(int(np.sqrt(len(G.nodes()))), 5)
+        nodes_per_level = len(G.nodes()) // n_levels + 1
+        
+        pos = {}
+        for i, node in enumerate(sorted_nodes):
+            level = min(i // nodes_per_level, n_levels - 1)
+            position_in_level = i % nodes_per_level
+            
+            # Calculate x and y coordinates
+            y = 1 - (level / (n_levels - 1)) if n_levels > 1 else 0.5
+            if nodes_per_level > 1:
+                x = position_in_level / (nodes_per_level - 1)
+            else:
+                x = 0.5
+                
+            pos[node] = np.array([x, y])
+        
+        return pos
+
+    def _create_circular_layout(self) -> Dict:
+        """Create enhanced circular layout with community grouping."""
+        G = self.network_builder.graph
+        communities = self.network_builder.detect_communities()
+        
+        # Sort nodes by community
+        sorted_nodes = []
+        for community in sorted(set(communities.values())):
+            community_nodes = [n for n, c in communities.items() if c == community]
+            sorted_nodes.extend(community_nodes)
+        
+        # Calculate positions on circle
+        pos = {}
+        for i, node in enumerate(sorted_nodes):
+            angle = 2 * np.pi * i / len(sorted_nodes)
+            pos[node] = np.array([np.cos(angle), np.sin(angle)])
+            
+            # Add small displacement based on community
+            community = communities[node]
+            displacement = 0.1 * (community / len(set(communities.values())))
+            pos[node] = pos[node] * (1 + displacement)
+        
+        return pos
+
+    def _create_spiral_layout(self) -> Dict:
+        """Create spiral layout based on temporal relationships."""
+        G = self.network_builder.graph
+        
+        # Get temporal order if available
+        if hasattr(self.network_builder, 'data'):
+            # Use first appearance in time series as ordering
+            temporal_order = {}
+            for node in G.nodes():
+                data = self.network_builder.data[node]
+                first_valid = data.first_valid_index()
+                temporal_order[node] = first_valid if first_valid is not None else pd.Timestamp.min
+            
+            sorted_nodes = sorted(temporal_order.keys(), key=lambda x: temporal_order[x])
+        else:
+            sorted_nodes = list(G.nodes())
+        
+        # Create spiral positions
+        pos = {}
+        for i, node in enumerate(sorted_nodes):
+            # Calculate spiral parameters
+            t = i / len(sorted_nodes) * 4 * np.pi  # 2 full rotations
+            r = t / (4 * np.pi)  # Increasing radius
+            
+            # Convert to cartesian coordinates
+            x = r * np.cos(t)
+            y = r * np.sin(t)
+            pos[node] = np.array([x, y])
+        
+        return pos
+
+    def _create_multi_level_layout(self) -> Dict:
+        """Create multi-level layout based on node relationships."""
+        G = self.network_builder.graph
+        
+        # Calculate node metrics
+        centrality = nx.eigenvector_centrality_numpy(G)
+        clustering = nx.clustering(G)
+        communities = self.network_builder.detect_communities()
+        
+        # Create positions using combination of metrics
+        pos = {}
+        for node in G.nodes():
+            # Calculate radial position based on centrality
+            r = 1 - centrality[node]
+            
+            # Calculate angular position based on community
+            community = communities[node]
+            base_angle = 2 * np.pi * community / len(set(communities.values()))
+            
+            # Add variation based on clustering coefficient
+            angle = base_angle + clustering[node] * np.pi / 4
+            
+            # Convert to cartesian coordinates
+            x = r * np.cos(angle)
+            y = r * np.sin(angle)
+            pos[node] = np.array([x, y])
+        
+        return pos
+
+    def create_animated_evolution(self, steps: int = 30) -> go.Figure:
+        """Create animated visualization of network evolution.
+        
+        Args:
+            steps: Number of animation steps
+            
+        Returns:
+            go.Figure: Animated network visualization
+        """
+        if not hasattr(self.network_builder, 'data'):
+            raise ValueError("Network builder must have temporal data")
+        
+        # Create base figure
+        fig = go.Figure()
+        
+        # Generate frames
+        frames = []
+        timestamps = list(next(iter(self.network_builder.data.values())).index)
+        step_size = max(1, len(timestamps) // steps)
+        
+        for i in range(0, len(timestamps), step_size):
+            # Create network for this timestamp
+            current_data = {
+                asset: df.iloc[:i+1]
+                for asset, df in self.network_builder.data.items()
+            }
+            current_network = NetworkBuilder(current_data, self.network_builder.config)
+            current_network.create_correlation_network()
+            
+            # Create network layout
+            pos = self._create_animated_layout(current_network.graph, i/len(timestamps))
+            
+            # Create frame
+            frame = go.Frame(
+                data=self._create_animated_traces(current_network.graph, pos),
+                name=f'frame_{i}'
+            )
+            frames.append(frame)
+        
+        # Add frames to figure
+        fig.frames = frames
+        
+        # Add animation controls
+        fig.update_layout(
+            updatemenus=[{
+                'type': 'buttons',
+                'showactive': False,
+                'buttons': [{
+                    'label': 'Play',
+                    'method': 'animate',
+                    'args': [None, {
+                        'frame': {'duration': 500, 'redraw': True},
+                        'fromcurrent': True,
+                        'transition': {'duration': 300}
+                    }]
+                }, {
+                    'label': 'Pause',
+                    'method': 'animate',
+                    'args': [[None], {
+                        'frame': {'duration': 0, 'redraw': False},
+                        'mode': 'immediate',
+                        'transition': {'duration': 0}
+                    }]
+                }]
+            }]
+        )
+        
+        return fig

@@ -320,5 +320,111 @@ class TestCandlestickVisualizer(unittest.TestCase):
         regimes_long = self.visualizer.detect_market_regime(window=30)
         self.assertEqual(regimes.columns.tolist(), regimes_long.columns.tolist())
 
+    def test_visualization_config_post_init(self):
+        """Test VisualizationConfig post initialization"""
+        # Test with no color scheme (should use default)
+        config = VisualizationConfig()
+        self.assertIsNotNone(config.color_scheme)
+        self.assertIn('bullish', config.color_scheme)
+        self.assertIn('bearish', config.color_scheme)
+        
+        # Test with partial color scheme (should merge with defaults)
+        partial_colors = {'bullish': '#00FF00'}
+        config = VisualizationConfig(color_scheme=partial_colors)
+        self.assertIn('bearish', config.color_scheme)
+        self.assertEqual(config.color_scheme['bullish'], '#00FF00')
+
+    def test_visualizer_initialization(self):
+        """Test CandlestickVisualizer initialization"""
+        # Test with default config
+        viz = CandlestickVisualizer(self.test_data)
+        self.assertIsInstance(viz.config, VisualizationConfig)
+        self.assertEqual(viz.config.theme, 'plotly_white')
+        
+        # Test with custom config
+        custom_config = VisualizationConfig(
+            theme='plotly_dark',
+            default_height=1000,
+            default_width=1500
+        )
+        viz_custom = CandlestickVisualizer(self.test_data, custom_config)
+        self.assertEqual(viz_custom.config.theme, 'plotly_dark')
+        self.assertEqual(viz_custom.config.default_height, 1000)
+        
+        # Test with invalid dataframe
+        with self.assertRaises(Exception):
+            CandlestickVisualizer(pd.DataFrame())  # Empty DataFrame
+
+    def test_create_regime_visualization_parameters(self):
+        """Test regime visualization with different parameters"""
+        # Test basic visualization
+        fig = self.visualizer.create_regime_visualization()
+        self.assertIsInstance(fig, go.Figure)
+        
+        # Create regime data with specific patterns
+        data = self.test_data.copy()
+        # Create uptrend
+        data.loc['2023-01-01':'2023-01-10', 'Close'] = range(100, 110)
+        viz = CandlestickVisualizer(data)
+        fig = viz.create_regime_visualization()
+        
+        # Check for regime backgrounds
+        regime_traces = [trace for trace in fig.data if trace.fill == 'tonexty']
+        self.assertTrue(len(regime_traces) > 0)
+
+    def test_pattern_correlation_analysis_types(self):
+        """Test pattern correlation analysis with different correlation types"""
+        fig = go.Figure()
+        
+        # Add some specific pattern data
+        data = self.test_data.copy()
+        data['trend'] = np.arange(len(data))  # Clear trend
+        viz = CandlestickVisualizer(data)
+        
+        # Test correlation analysis
+        fig = viz.add_pattern_correlation_analysis(fig)
+        self.assertIsInstance(fig, go.Figure)
+        
+        # Verify heatmap is added
+        heatmap_traces = [trace for trace in fig.data if trace.type == 'heatmap']
+        self.assertTrue(len(heatmap_traces) > 0)
+
+    def test_calculate_atr_variations(self):
+        """Test ATR calculation with different parameters"""
+        # Calculate ATR for different windows
+        data = self.test_data.copy()
+        viz = CandlestickVisualizer(data)
+        
+        atr = viz._calculate_atr(data, window=14)
+        self.assertIsInstance(atr, pd.Series)
+        self.assertEqual(len(atr), len(data))
+        
+        # Test with different window sizes
+        atr_short = viz._calculate_atr(data, window=7)
+        atr_long = viz._calculate_atr(data, window=28)
+        
+        # ATR should always be positive
+        self.assertTrue(all(x >= 0 for x in atr.dropna()))
+        
+        # Longer window should generally give smoother results
+        self.assertTrue(atr_long.std() < atr_short.std())
+
+    def test_pattern_correlation_edge_cases(self):
+        """Test pattern correlation analysis with edge cases"""
+        fig = go.Figure()
+        
+        # Test with minimal data
+        small_data = self.test_data.head(5).copy()
+        viz_small = CandlestickVisualizer(small_data)
+        fig = viz_small.add_pattern_correlation_analysis(fig)
+        self.assertIsInstance(fig, go.Figure)
+        
+        # Test with constant data (should handle zero variance)
+        const_data = self.test_data.copy()
+        const_data['Close'] = 100
+        viz_const = CandlestickVisualizer(const_data)
+        fig = viz_const.add_pattern_correlation_analysis(fig)
+        self.assertIsInstance(fig, go.Figure)
+
 if __name__ == '__main__':
     unittest.main()

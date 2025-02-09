@@ -175,6 +175,150 @@ class TestCandlestickVisualizer(unittest.TestCase):
         self.assertIsInstance(macd, pd.Series)
         self.assertEqual(len(macd), len(self.test_data))
 
+    def test_get_all_pattern_methods(self):
+        """Test retrieving all pattern detection methods"""
+        pattern_methods = self.visualizer._get_all_pattern_methods()
+        self.assertIsInstance(pattern_methods, dict)
+        self.assertTrue(len(pattern_methods) > 0)
+        # Verify all methods start with 'detect_'
+        self.assertTrue(all(inspect.isfunction(method) for method in pattern_methods.values()))
+
+    def test_create_matplotlib_chart_with_indicators(self):
+        """Test matplotlib chart creation with various indicators"""
+        # Create Bollinger Bands
+        df = self.test_data.copy()
+        sma = df['Close'].rolling(window=20).mean()
+        std = df['Close'].rolling(window=20).std()
+        bollinger_upper = sma + (std * 2)
+        bollinger_lower = sma - (std * 2)
+        
+        fig = self.visualizer._create_matplotlib_chart(
+            bollinger_upper=bollinger_upper,
+            bollinger_mid=sma,
+            bollinger_lower=bollinger_lower,
+            pivot_points=[100, 110, 120],
+            title="Test Chart"
+        )
+        self.assertIsNotNone(fig)
+
+    def test_cluster_patterns(self):
+        """Test pattern clustering functionality"""
+        clustered_data = self.visualizer._cluster_patterns(window_size=10)
+        self.assertIsInstance(clustered_data, pd.DataFrame)
+        self.assertIn('cluster', clustered_data.columns)
+        # Test with different window sizes
+        clustered_data_large = self.visualizer._cluster_patterns(window_size=30)
+        self.assertEqual(len(clustered_data), len(clustered_data_large))
+
+    def test_create_pattern_reliability_chart_with_filters(self):
+        """Test pattern reliability chart with different lookback windows"""
+        fig = self.visualizer.create_pattern_reliability_chart(lookback_window=50)
+        self.assertIsInstance(fig, go.Figure)
+        self.assertTrue(len(fig.data) >= 4)  # Should have at least 4 subplots
+
+    def test_create_pattern_cluster_chart_empty_data(self):
+        """Test pattern cluster chart creation with empty data"""
+        empty_df = pd.DataFrame(columns=['Open', 'High', 'Low', 'Close', 'Volume'])
+        viz = CandlestickVisualizer(empty_df, self.config)
+        fig = viz.create_pattern_cluster_chart()
+        self.assertIsInstance(fig, go.Figure)
+
+    def test_create_interactive_dashboard_components(self):
+        """Test all components of interactive dashboard"""
+        fig = self.visualizer.create_interactive_dashboard()
+        self.assertIsInstance(fig, go.Figure)
+        
+        # Test menu components
+        self.assertTrue(hasattr(fig.layout, 'updatemenus'))
+        self.assertGreaterEqual(len(fig.layout.updatemenus), 1)
+        
+        # Test subplot structure
+        self.assertTrue(hasattr(fig.layout, 'annotations'))
+        self.assertGreaterEqual(len(fig.layout.annotations), 3)
+
+    def test_volume_profile_visualization(self):
+        """Test volume profile components"""
+        colors = self.visualizer._get_volume_colors()
+        self.assertEqual(len(colors), len(self.test_data))
+        self.assertTrue(all(c in [self.config.color_scheme['volume_up'], 
+                                self.config.color_scheme['volume_down']] 
+                            for c in colors))
+
+    def test_pattern_buttons_creation(self):
+        """Test pattern button creation for dashboard"""
+        buttons = self.visualizer._create_pattern_buttons()
+        self.assertIsInstance(buttons, list)
+        self.assertGreater(len(buttons), 1)  # Should have at least "All Patterns" button
+        self.assertEqual(buttons[0]['label'], 'All Patterns')
+
+    def test_add_price_action_confirmation_indicators(self):
+        """Test price action confirmation indicators"""
+        confirmation = self.visualizer.add_price_action_confirmation()
+        self.assertIsInstance(confirmation, pd.DataFrame)
+        required_columns = ['RSI', 'MACD', 'Volume_MA_Ratio', 'ATR_Ratio']
+        for col in required_columns:
+            self.assertIn(col, confirmation.columns)
+        # Test value ranges
+        self.assertTrue(all(0 <= x <= 100 for x in confirmation['RSI'].dropna()))
+
+    def test_pattern_significance_calculation(self):
+        """Test pattern significance calculations"""
+        significance = self.visualizer.add_pattern_significance(confidence_level=0.95)
+        self.assertIsInstance(significance, pd.DataFrame)
+        self.assertTrue('p_value' in significance.columns)
+        self.assertTrue('significant' in significance.columns)
+        # Test p-values are within valid range
+        self.assertTrue(all(0 <= x <= 1 for x in significance['p_value'].dropna()))
+
+    def test_analyze_pattern_sequences_lookback(self):
+        """Test pattern sequence analysis with different lookback periods"""
+        sequences = self.visualizer.analyze_pattern_sequences(lookback=3)
+        self.assertIsInstance(sequences, pd.DataFrame)
+        self.assertTrue(all(col in sequences.columns for col in ['up', 'down', 'total']))
+        
+        # Test with different lookback
+        sequences_long = self.visualizer.analyze_pattern_sequences(lookback=5)
+        self.assertEqual(sequences.columns.tolist(), sequences_long.columns.tolist())
+
+    def test_overlay_custom_indicators_multiple(self):
+        """Test overlaying multiple custom indicators"""
+        fig = go.Figure()
+        
+        # Define multiple custom indicators
+        indicators = {
+            'SMA20': lambda df: df['Close'].rolling(window=20).mean(),
+            'SMA50': lambda df: df['Close'].rolling(window=50).mean(),
+            'Momentum': lambda df: df['Close'] - df['Close'].shift(10)
+        }
+        
+        fig = self.visualizer.overlay_custom_indicators(fig, indicators)
+        self.assertIsInstance(fig, go.Figure)
+        self.assertEqual(len(fig.data), len(indicators))
+
+    def test_technical_indicators_calculation(self):
+        """Test technical indicator calculations"""
+        # Test RSI
+        rsi = self.visualizer._calculate_rsi(self.test_data['Close'])
+        self.assertIsInstance(rsi, pd.Series)
+        self.assertTrue(all(0 <= x <= 100 for x in rsi.dropna()))
+        
+        # Test MACD
+        macd = self.visualizer._calculate_macd(self.test_data['Close'])
+        self.assertIsInstance(macd, pd.Series)
+        self.assertEqual(len(macd), len(self.test_data))
+
+    def test_market_regime_detection_periods(self):
+        """Test market regime detection with different periods"""
+        regimes = self.visualizer.detect_market_regime(window=10)
+        self.assertIsInstance(regimes, pd.DataFrame)
+        required_columns = ['volatility_regime', 'trend_regime', 
+                        'volume_regime', 'momentum_regime', 'combined_regime']
+        for col in required_columns:
+            self.assertIn(col, regimes.columns)
+        
+        # Test with different window
+        regimes_long = self.visualizer.detect_market_regime(window=30)
+        self.assertEqual(regimes.columns.tolist(), regimes_long.columns.tolist())
 
 if __name__ == '__main__':
     unittest.main()

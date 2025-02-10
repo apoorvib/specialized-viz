@@ -429,5 +429,245 @@ class TestTimeseriesAnalysis(unittest.TestCase):
         result = analyzer.analyze_seasonality('value')
         self.assertIsInstance(result, dict)
 
+    def test_config_initialization(self):
+        """Test TimeseriesConfig initialization and validation"""
+        # Test default configuration
+        config = TimeseriesConfig()
+        self.assertEqual(config.decomposition_method, 'additive')
+        self.assertEqual(config.trend_window, 20)
+        self.assertEqual(config.forecast_horizon, 30)
+        self.assertEqual(config.seasonal_periods, [5, 21, 63, 252])
+        
+        # Test custom configuration
+        custom_config = TimeseriesConfig(
+            decomposition_method='multiplicative',
+            trend_window=30,
+            seasonal_periods=[7, 14, 28],
+            anomaly_threshold=0.2
+        )
+        self.assertEqual(custom_config.decomposition_method, 'multiplicative')
+        self.assertEqual(custom_config.trend_window, 30)
+        self.assertEqual(custom_config.seasonal_periods, [7, 14, 28])
+        self.assertEqual(custom_config.anomaly_threshold, 0.2)
+        
+        # Test invalid configuration
+        with self.assertRaises(ValueError):
+            TimeseriesConfig(decomposition_method='invalid')
+        with self.assertRaises(ValueError):
+            TimeseriesConfig(trend_window=-1)
+        with self.assertRaises(ValueError):
+            TimeseriesConfig(seasonal_periods=[0])
+        with self.assertRaises(ValueError):
+            TimeseriesConfig(anomaly_threshold=2.0)
+
+    def test_nonlinearity_analysis(self):
+        """Test nonlinearity analysis functionality"""
+        result = self.analyzer.analyze_nonlinearity('value')
+        
+        # Test structure
+        self.assertIsInstance(result, dict)
+        self.assertIn('terasvirta_test', result)
+        self.assertIn('bds_test', result)
+        self.assertIn('correlation_dimension', result)
+        self.assertIn('lyapunov_exponent', result)
+        
+        # Test Terasvirta test
+        terasvirta = result['terasvirta_test']
+        self.assertIn('statistic', terasvirta)
+        self.assertIn('p_value', terasvirta)
+        self.assertIn('is_nonlinear', terasvirta)
+        
+        # Test BDS test
+        bds = result['bds_test']
+        self.assertIn('statistics', bds)
+        self.assertIn('dimensions', bds)
+        self.assertIn('is_independent', bds)
+        
+        # Test with linear data
+        linear_data = pd.DataFrame({
+            'value': np.linspace(0, 100, 1000)
+        }, index=self.test_data.index)
+        linear_analyzer = TimeseriesAnalysis(linear_data)
+        linear_result = linear_analyzer.analyze_nonlinearity('value')
+        self.assertFalse(linear_result['terasvirta_test']['is_nonlinear'])
+        
+        # Test with nonlinear data (logistic map)
+        x = np.zeros(1000)
+        x[0] = 0.5
+        r = 3.9  # Chaos parameter
+        for i in range(1, 1000):
+            x[i] = r * x[i-1] * (1 - x[i-1])
+        nonlinear_data = pd.DataFrame({
+            'value': x
+        }, index=self.test_data.index)
+        nonlinear_analyzer = TimeseriesAnalysis(nonlinear_data)
+        nonlinear_result = nonlinear_analyzer.analyze_nonlinearity('value')
+        self.assertTrue(nonlinear_result['terasvirta_test']['is_nonlinear'])
+
+    def test_helper_methods(self):
+        """Test internal helper methods"""
+        # Test _calculate_atr
+        atr = self.analyzer._calculate_atr(self.test_data, window=14)
+        self.assertIsInstance(atr, pd.Series)
+        self.assertEqual(len(atr), len(self.test_data))
+        self.assertTrue(all(x >= 0 for x in atr.dropna()))
+        
+        # Test _check_stable_statistics
+        is_stable = self.analyzer._check_stable_statistics(self.test_data['value'])
+        self.assertIsInstance(is_stable, bool)
+        
+        # Test with clearly unstable data
+        unstable_data = pd.concat([
+            pd.Series(np.ones(500)),
+            pd.Series(np.ones(500) * 1000)
+        ])
+        is_unstable = self.analyzer._check_stable_statistics(unstable_data)
+        self.assertFalse(is_unstable)
+        
+        # Test _detect_chow_breaks
+        breaks = self.analyzer._detect_chow_breaks(self.test_data['value'])
+        self.assertIsInstance(breaks, list)
+        for break_point in breaks:
+            self.assertIn('index', break_point)
+            self.assertIn('statistic', break_point)
+            self.assertIn('p_value', break_point)
+        
+        # Test _detect_multiple_breaks
+        multiple_breaks = self.analyzer._detect_multiple_breaks(self.test_data['value'])
+        self.assertIsInstance(multiple_breaks, list)
+        self.assertTrue(all('index' in b and 'type' in b for b in multiple_breaks))
+
+    def test_large_dataset_performance(self):
+        """Test performance with large datasets"""
+        # Create large dataset (100K points)
+        dates = pd.date_range('2020-01-01', periods=100000, freq='5min')
+        large_data = pd.DataFrame({
+            'value': np.random.randn(100000),
+            'volume': np.random.randint(1000, 5000, 100000)
+        }, index=dates)
+        
+        large_analyzer = TimeseriesAnalysis(large_data)
+        
+        # Test basic analysis performance
+        import time
+        
+        # Test seasonality analysis
+        start_time = time.time()
+        large_analyzer.analyze_seasonality('value')
+        season_time = time.time() - start_time
+        self.assertLess(season_time, 30)  # Should complete within 30 seconds
+        
+        # Test anomaly detection performance
+        start_time = time.time()
+        large_analyzer.detect_anomalies('value')
+        anomaly_time = time.time() - start_time
+        self.assertLess(anomaly_time, 30)
+        
+        # Test structural breaks performance
+        start_time = time.time()
+        large_analyzer.detect_structural_breaks('value')
+        breaks_time = time.time() - start_time
+        self.assertLess(breaks_time, 30)
+
+    def test_statistical_distributions(self):
+        """Test statistical distribution analysis"""
+        # Test with normal distribution
+        normal_data = pd.DataFrame({
+            'value': np.random.normal(0, 1, 1000)
+        }, index=self.test_data.index)
+        normal_analyzer = TimeseriesAnalysis(normal_data)
+        normal_stats = normal_analyzer.analyze_stationarity('value')
+        self.assertTrue(normal_stats['adf_test']['is_stationary'])
+        
+        # Test with uniform distribution
+        uniform_data = pd.DataFrame({
+            'value': np.random.uniform(0, 1, 1000)
+        }, index=self.test_data.index)
+        uniform_analyzer = TimeseriesAnalysis(uniform_data)
+        uniform_stats = uniform_analyzer.analyze_stationarity('value')
+        self.assertTrue(uniform_stats['adf_test']['is_stationary'])
+        
+        # Test with exponential distribution
+        exp_data = pd.DataFrame({
+            'value': np.random.exponential(1, 1000)
+        }, index=self.test_data.index)
+        exp_analyzer = TimeseriesAnalysis(exp_data)
+        exp_stats = exp_analyzer.analyze_stationarity('value')
+        self.assertTrue(exp_stats['adf_test']['is_stationary'])
+        
+        # Test with lognormal distribution
+        lognorm_data = pd.DataFrame({
+            'value': np.random.lognormal(0, 1, 1000)
+        }, index=self.test_data.index)
+        lognorm_analyzer = TimeseriesAnalysis(lognorm_data)
+        lognorm_stats = lognorm_analyzer.analyze_stationarity('value')
+        self.assertFalse(lognorm_stats['adf_test']['is_stationary'])
+
+    def test_advanced_decomposition(self):
+        """Test advanced decomposition methods"""
+        # Test multiplicative decomposition
+        mult_config = TimeseriesConfig(decomposition_method='multiplicative')
+        mult_analyzer = TimeseriesAnalysis(self.test_data, mult_config)
+        mult_decomp = mult_analyzer.decompose('value')
+        
+        self.assertIsInstance(mult_decomp, dict)
+        self.assertTrue(all(x > 0 for x in mult_decomp['trend'].dropna()))
+        self.assertTrue(all(x > 0 for x in mult_decomp['seasonal'].dropna()))
+        
+        # Test with zero values (should raise error for multiplicative)
+        zero_data = self.test_data.copy()
+        zero_data.loc[zero_data.index[0], 'value'] = 0
+        with self.assertRaises(ValueError):
+            mult_analyzer = TimeseriesAnalysis(zero_data, mult_config)
+            mult_analyzer.decompose('value')
+        
+        # Test with different seasonal periods
+        custom_periods = TimeseriesConfig(seasonal_periods=[7, 30, 90])
+        period_analyzer = TimeseriesAnalysis(self.test_data, custom_periods)
+        period_decomp = period_analyzer.decompose('value')
+        
+        self.assertNotEqual(
+            period_decomp['seasonal'].std(),
+            mult_decomp['seasonal'].std()
+        )
+
+    def test_extreme_cases(self):
+        """Test handling of extreme cases"""
+        # Test with constant data
+        const_data = pd.DataFrame({
+            'value': np.ones(1000)
+        }, index=self.test_data.index)
+        const_analyzer = TimeseriesAnalysis(const_data)
+        
+        # Seasonality should be zero
+        const_seasonal = const_analyzer.analyze_seasonality('value')
+        self.assertAlmostEqual(const_seasonal['seasonal_strength_5'], 0)
+        
+        # No anomalies should be detected
+        const_anomalies = const_analyzer.detect_anomalies('value')
+        self.assertEqual(const_anomalies['iqr'].sum(), 0)
+        
+        # Test with all missing data
+        na_data = pd.DataFrame({
+            'value': np.nan * np.ones(1000)
+        }, index=self.test_data.index)
+        with self.assertRaises(ValueError):
+            TimeseriesAnalysis(na_data)
+        
+        # Test with infinities
+        inf_data = pd.DataFrame({
+            'value': np.inf * np.ones(1000)
+        }, index=self.test_data.index)
+        with self.assertRaises(ValueError):
+            TimeseriesAnalysis(inf_data)
+        
+        # Test with very large numbers
+        large_data = pd.DataFrame({
+            'value': 1e100 * np.ones(1000)
+        }, index=self.test_data.index)
+        large_analyzer = TimeseriesAnalysis(large_data)
+        large_stats = large_analyzer.analyze_stationarity('value')
+        self.assertTrue(large_stats['adf_test']['is_stationary'])
+
 if __name__ == '__main__':
     unittest.main()

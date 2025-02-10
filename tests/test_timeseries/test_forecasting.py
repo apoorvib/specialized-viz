@@ -167,9 +167,11 @@ class TestTimeseriesVisualizer(unittest.TestCase):
         with self.assertWarns(Warning):
             small_visualizer.plot_distribution_evolution('value')
 
-if __name__ == '__main__':
-    unittest.main()
-    fig.data) >= 4)  # Should have ACF, PACF, Rolling Correlation, and Heatmap
+    def test_correlogram(self):
+        """Test correlogram plotting"""
+        fig = self.visualizer.plot_correlogram('value')
+        self.assertIsInstance(fig, go.Figure)
+        self.assertTrue(len(fig.data) >= 4)  # Should have ACF, PACF, Rolling Correlation, and Heatmap
 
     def test_plot_distribution_evolution(self):
         """Test distribution evolution plotting"""
@@ -591,3 +593,6 @@ if __name__ == '__main__':
         # Test legend font
         self.assertTrue(hasattr(fig.layout.legend, 'font'))
         self.assertEqual(fig.layout.legend.font.size, 10)
+
+if __name__ == '__main__':
+    unittest.main()

@@ -116,6 +116,17 @@ class TimeseriesForecasting:
         return features
 
     def ensemble_forecast(self, features: pd.DataFrame, target: pd.Series) -> Dict:
+        
+        # Fix: Align data first and handle NaN values
+        features, target = features.align(target, join='inner', axis=0)
+        if len(features) == 0:
+            raise ValueError("No overlapping data after alignment")
+
+        # Remove any remaining NaN values
+        mask = ~(features.isna().any(axis=1) | target.isna())
+        features = features[mask]
+        target = target[mask]
+        
         # Initialize base models
         models = {
             'rf': RandomForestRegressor(random_state=42),
@@ -145,7 +156,7 @@ class TimeseriesForecasting:
             'weights': weights,
             'model_predictions': predictions
         }
-
+    
     def _optimize_ensemble_weights(self, predictions: Dict[str, np.ndarray], 
                                  actual: pd.Series) -> Dict[str, float]:
         """Optimize ensemble weights using Optuna."""
@@ -427,58 +438,62 @@ class TimeseriesForecasting:
             self.online_performance = pd.DataFrame()
         
     def cross_validate(self, features: pd.DataFrame, target: pd.Series,
-                      n_splits: int = None) -> Dict[str, float]:
-        """Perform time series cross-validation.
+                    n_splits: Optional[int] = None, method: str = 'rolling') -> Dict:
+        """
+        Perform time series cross-validation with support for different CV methods
         
         Args:
             features: Feature DataFrame
             target: Target series
             n_splits: Number of CV splits
-            
-        Returns:
-            Dictionary with cross-validation metrics
+            method: CV method
         """
         if n_splits is None:
             n_splits = self.config.cv_folds
             
+        # Align data first
+        features, target = features.align(target, join='inner', axis=0)
+        if len(features) == 0:
+            raise ValueError("No overlapping data after alignment")
+        
         cv_metrics = []
         
-        # Time series split
-        for i in range(n_splits):
-            # Calculate split indices
-            train_size = int(len(features) * (0.6 + i * 0.1))
-            val_size = int(len(features) * 0.1)
-            
-            if train_size + val_size > len(features):
-                break
+        if method == 'rolling':
+            # Rolling window cross-validation
+            window_size = len(features) // n_splits
+            for i in range(n_splits):
+                start_idx = i * window_size
+                end_idx = start_idx + window_size
+                if i == n_splits - 1:
+                    end_idx = len(features)
+                    
+                train_features = features.iloc[:end_idx-window_size]
+                train_target = target.iloc[:end_idx-window_size]
+                val_features = features.iloc[end_idx-window_size:end_idx]
+                val_target = target.iloc[end_idx-window_size:end_idx]
                 
-            # Split data
-            X_train = features.iloc[:train_size]
-            y_train = target.iloc[:train_size]
-            X_val = features.iloc[train_size:train_size + val_size]
-            y_val = target.iloc[train_size:train_size + val_size]
+                metrics = self._evaluate_fold(train_features, train_target,
+                                        val_features, val_target)
+                cv_metrics.append(metrics)
+                
+        elif method == 'expanding':
+            # Expanding window cross-validation
+            initial_size = len(features) // (n_splits + 1)
+            for i in range(n_splits):
+                train_end = initial_size * (i + 1)
+                val_end = train_end + initial_size
+                
+                train_features = features.iloc[:train_end]
+                train_target = target.iloc[:train_end]
+                val_features = features.iloc[train_end:val_end]
+                val_target = target.iloc[train_end:val_end]
+                
+                metrics = self._evaluate_fold(train_features, train_target,
+                                        val_features, val_target)
+                cv_metrics.append(metrics)
+        else:
+            raise ValueError(f"Unknown cross-validation method: {method}")
             
-            # Train and evaluate
-            model = self._get_model()
-            model.fit(X_train, y_train)
-            predictions = model.predict(X_val)
-            
-            # Calculate metrics
-            metrics = {
-                'mse': mean_squared_error(y_val, predictions),
-                'mae': mean_absolute_error(y_val, predictions),
-                'r2': r2_score(y_val, predictions)
-            }
-            cv_metrics.append(metrics)
-            
-        # Average metrics
-        avg_metrics = {}
-        for metric in cv_metrics[0].keys():
-            avg_metrics[metric] = np.mean([m[metric] for m in cv_metrics])
-            avg_metrics[f'{metric}_std'] = np.std([m[metric] for m in cv_metrics])
-            
-        return avg_metrics
-        
     def _get_model(self) -> Union[RandomForestRegressor, 
                                  GradientBoostingRegressor,
                                  LinearRegression]:
@@ -888,13 +903,24 @@ class TimeseriesForecasting:
         """
         from statsmodels.tsa.api import VAR
         
-        # Combine target and features
-        data = pd.concat([target, features], axis=1)
+            # Align data
+        features, target = features.align(target, join='inner', axis=0)
+        
+        # Convert to numeric type and handle NaN
+        features = features.astype(float)
+        target = target.astype(float)
+        
+        # Create combined dataset
+        data = pd.concat([target.to_frame(), features], axis=1)
+        data = data.fillna(method='ffill').fillna(method='bfill')
         
         # Fit VAR model
-        model = VAR(data)
-        results = model.fit()
-        
+        try:
+            model = VAR(data)
+            results = model.fit()
+        except ValueError as e:
+            raise ValueError(f"Error fitting VAR model: {str(e)}")
+                
         # Make forecast
         forecast = results.forecast(data.values, steps=self.config.forecast_horizon)
         
@@ -918,9 +944,21 @@ class TimeseriesForecasting:
         Returns:
             Dictionary with LSTM forecast results
         """
+        from sklearn.preprocessing import StandardScaler
         import tensorflow as tf
         from tensorflow.keras.models import Sequential
         from tensorflow.keras.layers import LSTM, Dense, Dropout
+        
+        # Align and preprocess data
+        features, target = features.align(target, join='inner', axis=0)
+        if len(features) == 0:
+            raise ValueError("No overlapping data after alignment")
+
+        # Scale data
+        scaler = StandardScaler()
+        scaled_data = scaler.fit_transform(
+            pd.concat([target.to_frame(), features], axis=1)
+        )
         
         # Prepare data for LSTM
         def create_sequences(data, seq_length):
@@ -1029,7 +1067,7 @@ class TimeseriesForecasting:
             'model': nbeats
         }
     
-    def _prepare_time_series(self, target: pd.Series) -> pd.Series:
+    def _prepare_time_series(self, series: pd.Series) -> pd.Series:
         """Prepare time series data with proper frequency information.
         
         Args:
@@ -1039,31 +1077,34 @@ class TimeseriesForecasting:
             Series with proper datetime index, frequency, and no missing values
         """
         # Ensure datetime index
-        if not isinstance(target.index, pd.DatetimeIndex):
-            target.index = pd.to_datetime(target.index)
+        if not isinstance(series.index, pd.DatetimeIndex):
+            try:
+                series.index = pd.to_datetime(series.index)
+            except Exception as e:
+                raise ValueError(f"Index must be convertible to datetime. Error: {str(e)}")
             
+        # Handle missing values
+        if series.isnull().any():
+            series = series.fillna(method='ffill').fillna(method='bfill')
+
+          
         # Infer frequency if not set
-        if target.index.freq is None:
+        if series.index.freq is None:
             # Calculate most common frequency
-            freq = pd.infer_freq(target.index)
+            freq = pd.infer_freq(series.index)
             if freq is None:
                 # If can't infer, use business day for financial data
                 freq = 'B'
             
             # Reindex with proper frequency
-            target = target.asfreq(freq)
-
-        # Handle missing values
-        if target.isnull().any():
-            # Forward fill, then backward fill for any remaining NaNs
-            target = target.fillna(method='ffill').fillna(method='bfill')
+            series = series.asfreq(freq)
             
             # If still have NaNs at the beginning or end, interpolate
-            if target.isnull().any():
-                target = target.interpolate(method='time').fillna(
+            if series.isnull().any():
+                series = series.interpolate(method='time').fillna(
                     method='ffill').fillna(method='bfill')
         
-        return target
+        return series
         
     def _set_forecast_index(self, last_date: pd.Timestamp, steps: int) -> pd.DatetimeIndex:
         """Create proper index for forecast values."""

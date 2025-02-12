@@ -7,16 +7,15 @@ class TestCandlestickPatterns(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         """Set up test data that will be used across test methods"""
-        # Create sample OHLCV data
         dates = pd.date_range(start='2023-01-01', periods=100, freq='D')
         cls.test_data = pd.DataFrame({
-            'Open': np.random.randint(100, 150, 100),
-            'High': np.random.randint(120, 170, 100),
-            'Low': np.random.randint(80, 130, 100),
-            'Close': np.random.randint(90, 160, 100),
+            'Open': np.random.uniform(100, 150, 100),  # Use float instead of int
+            'High': np.random.uniform(120, 170, 100),
+            'Low': np.random.uniform(80, 130, 100),
+            'Close': np.random.uniform(90, 160, 100),
             'Volume': np.random.randint(1000000, 5000000, 100)
         }, index=dates)
-        
+
         # Ensure High is highest and Low is lowest
         cls.test_data['High'] = cls.test_data[['Open', 'High', 'Close']].max(axis=1)
         cls.test_data['Low'] = cls.test_data[['Open', 'Low', 'Close']].min(axis=1)
@@ -184,15 +183,15 @@ class TestCandlestickPatterns(unittest.TestCase):
     def test_detect_shooting_star(self):
         """Test shooting star pattern detection"""
         star_data = self.test_data.copy()
-        # Create shooting star pattern
-        star_data.loc['2023-01-05', 'Open'] = 100
-        star_data.loc['2023-01-05', 'Close'] = 102
-        star_data.loc['2023-01-05', 'High'] = 120
-        star_data.loc['2023-01-05', 'Low'] = 98
+        # Create more pronounced shooting star pattern
+        star_data.loc['2023-01-05', 'Open'] = 100.0
+        star_data.loc['2023-01-05', 'Close'] = 102.0
+        star_data.loc['2023-01-05', 'High'] = 120.0  # Long upper shadow
+        star_data.loc['2023-01-05', 'Low'] = 98.0    # Small lower shadow
         
         result = self.patterns.detect_shooting_star(star_data)
         self.assertTrue(result['2023-01-05'])
-        
+            
         # Test non-shooting star (long lower shadow)
         star_data.loc['2023-01-06', 'Open'] = 100
         star_data.loc['2023-01-06', 'Close'] = 102

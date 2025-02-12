@@ -21,7 +21,7 @@ class CandlestickPatterns:
             (body / total_length < body_ratio) &
             (lower_shadow / body > shadow_ratio) &
             (upper_shadow < body)
-        )
+    )
 
     @staticmethod
     def detect_engulfing(df):
@@ -80,26 +80,24 @@ class CandlestickPatterns:
 
     @staticmethod
     def detect_three_white_soldiers(df, price_threshold=0.1):
-        """
-        Detect three white soldiers pattern
-        """
+        """Detect three white soldiers pattern"""
         return (
             # Three consecutive bullish candles
             (df['Close'] > df['Open']) &
             (df['Close'].shift(1) > df['Open'].shift(1)) &
             (df['Close'].shift(2) > df['Open'].shift(2)) &
             # Each opens within previous body
-            (df['Open'] > df['Open'].shift(1)) &
-            (df['Open'].shift(1) > df['Open'].shift(2)) &
+            (df['Open'] > df['Close'].shift(1)) &
+            (df['Open'].shift(1) > df['Close'].shift(2)) &
             # Each closes higher than previous
             (df['Close'] > df['Close'].shift(1)) &
             (df['Close'].shift(1) > df['Close'].shift(2)) &
-            # Small upper shadows
-            (((df['High'] - df['Close']) / (df['Close'] - df['Open'])) < price_threshold) &
-            (((df['High'].shift(1) - df['Close'].shift(1)) / 
-              (df['Close'].shift(1) - df['Open'].shift(1))) < price_threshold) &
-            (((df['High'].shift(2) - df['Close'].shift(2)) / 
-              (df['Close'].shift(2) - df['Open'].shift(2))) < price_threshold)
+            # Small upper shadows relative to body
+            ((df['High'] - df['Close']) / (df['Close'] - df['Open']) < price_threshold) &
+            ((df['High'].shift(1) - df['Close'].shift(1)) / 
+            (df['Close'].shift(1) - df['Open'].shift(1)) < price_threshold) &
+            ((df['High'].shift(2) - df['Close'].shift(2)) / 
+            (df['Close'].shift(2) - df['Open'].shift(2)) < price_threshold)
         )
         
     @staticmethod
@@ -363,31 +361,29 @@ class CandlestickPatterns:
 
     @staticmethod
     def detect_abandoned_baby(df, gap_threshold=0.01):
-        """
-        Detect Abandoned Baby pattern (both bullish and bearish)
-        """
+        """Detect Abandoned Baby pattern (both bullish and bearish)"""
         bullish = (
             # First day is bearish
             (df['Close'].shift(2) < df['Open'].shift(2)) &
             # Doji on second day gapped down
-            (df['High'].shift(1) < df['Low'].shift(2) - gap_threshold) &
-            # Third day is bullish and gaps up
+            (df['High'].shift(1) < df['Low'].shift(2) - df['Close'].shift(2) * gap_threshold) &
+            # Third day is bullish and gaps up from doji
             (df['Close'] > df['Open']) &
-            (df['Low'] > df['High'].shift(1) + gap_threshold)
+            (df['Low'] > df['High'].shift(1) + df['Close'].shift(1) * gap_threshold)
         )
         
         bearish = (
             # First day is bullish
             (df['Close'].shift(2) > df['Open'].shift(2)) &
             # Doji on second day gapped up
-            (df['Low'].shift(1) > df['High'].shift(2) + gap_threshold) &
-            # Third day is bearish and gaps down
+            (df['Low'].shift(1) > df['High'].shift(2) + df['Close'].shift(2) * gap_threshold) &
+            # Third day is bearish and gaps down from doji
             (df['Close'] < df['Open']) &
-            (df['High'] < df['Low'].shift(1) - gap_threshold)
+            (df['High'] < df['Low'].shift(1) - df['Close'].shift(1) * gap_threshold)
         )
         
-        return bullish, bearish
-
+        return pd.Series(bullish), pd.Series(bearish)
+    
     @staticmethod
     def detect_unique_three_river_bottom(df, threshold=0.01):
         """
@@ -600,74 +596,51 @@ class CandlestickPatterns:
 
     @staticmethod
     def detect_two_rabbits(df, threshold=0.01):
-        """
-        Detect Two Rabbits pattern (Reversal)
-        """
+        """Detect Two Rabbits pattern (Reversal)"""
         bullish = (
-            # Two long lower shadows
-            (df['Close'].shift(1) - df['Low'].shift(1) > threshold) &
-            (df['Close'] - df['Low'] > threshold) &
-            # Similar lows
-            (abs(df['Low'] - df['Low'].shift(1)) < threshold) &
-            # Second day closes higher
+            # Fix calculation to use actual prices
+            (df['Close'].shift(1) - df['Low'].shift(1) > threshold * df['Close'].shift(1)) &  # Relative threshold
+            (df['Close'] - df['Low'] > threshold * df['Close']) &
+            (abs(df['Low'] - df['Low'].shift(1)) < threshold * df['Low']) &
             (df['Close'] > df['Close'].shift(1))
         )
         
         bearish = (
-            # Two long upper shadows
-            (df['High'].shift(1) - df['Close'].shift(1) > threshold) &
-            (df['High'] - df['Close'] > threshold) &
-            # Similar highs
-            (abs(df['High'] - df['High'].shift(1)) < threshold) &
-            # Second day closes lower
+            (df['High'].shift(1) - df['Close'].shift(1) > threshold * df['Close'].shift(1)) &
+            (df['High'] - df['Close'] > threshold * df['Close']) &
+            (abs(df['High'] - df['High'].shift(1)) < threshold * df['High']) &
             (df['Close'] < df['Close'].shift(1))
         )
         
-        return bullish, bearish
+        return pd.Series(bullish), pd.Series(bearish)  # Explicitly return Series
 
     @staticmethod
     def detect_eight_new_price_lines(df, threshold=0.01):
-        """
-        Detect Eight New Price Lines pattern (Continuation)
-        """
-        bullish = (
-            # Eight consecutive higher highs and higher lows
-            (df['High'] > df['High'].shift(1)) &
-            (df['High'].shift(1) > df['High'].shift(2)) &
-            (df['High'].shift(2) > df['High'].shift(3)) &
-            (df['High'].shift(3) > df['High'].shift(4)) &
-            (df['High'].shift(4) > df['High'].shift(5)) &
-            (df['High'].shift(5) > df['High'].shift(6)) &
-            (df['High'].shift(6) > df['High'].shift(7)) &
-            (df['Low'] > df['Low'].shift(1)) &
-            (df['Low'].shift(1) > df['Low'].shift(2)) &
-            (df['Low'].shift(2) > df['Low'].shift(3)) &
-            (df['Low'].shift(3) > df['Low'].shift(4)) &
-            (df['Low'].shift(4) > df['Low'].shift(5)) &
-            (df['Low'].shift(5) > df['Low'].shift(6)) &
-            (df['Low'].shift(6) > df['Low'].shift(7))
-        )
+        """Detect Eight New Price Lines pattern (Continuation)"""
+        bullish = pd.Series(False, index=df.index)
+        bearish = pd.Series(False, index=df.index)
         
-        bearish = (
-            # Eight consecutive lower highs and lower lows
-            (df['High'] < df['High'].shift(1)) &
-            (df['High'].shift(1) < df['High'].shift(2)) &
-            (df['High'].shift(2) < df['High'].shift(3)) &
-            (df['High'].shift(3) < df['High'].shift(4)) &
-            (df['High'].shift(4) < df['High'].shift(5)) &
-            (df['High'].shift(5) < df['High'].shift(6)) &
-            (df['High'].shift(6) < df['High'].shift(7)) &
-            (df['Low'] < df['Low'].shift(1)) &
-            (df['Low'].shift(1) < df['Low'].shift(2)) &
-            (df['Low'].shift(2) < df['Low'].shift(3)) &
-            (df['Low'].shift(3) < df['Low'].shift(4)) &
-            (df['Low'].shift(4) < df['Low'].shift(5)) &
-            (df['Low'].shift(5) < df['Low'].shift(6)) &
-            (df['Low'].shift(6) < df['Low'].shift(7))
-        )
+        for i in range(7, len(df)):
+            # Check for 8 consecutive higher highs and higher lows
+            is_bullish = True
+            for j in range(1, 8):
+                if (df['High'].iloc[i-j+1] <= df['High'].iloc[i-j] or 
+                    df['Low'].iloc[i-j+1] <= df['Low'].iloc[i-j]):
+                    is_bullish = False
+                    break
+            bullish.iloc[i] = is_bullish
+            
+            # Check for 8 consecutive lower highs and lower lows
+            is_bearish = True
+            for j in range(1, 8):
+                if (df['High'].iloc[i-j+1] >= df['High'].iloc[i-j] or 
+                    df['Low'].iloc[i-j+1] >= df['Low'].iloc[i-j]):
+                    is_bearish = False
+                    break
+            bearish.iloc[i] = is_bearish
         
         return bullish, bearish
-
+    
     @staticmethod
     def detect_gapping_side_by_side_white_lines(df, gap_threshold=0.01):
         """
@@ -690,17 +663,12 @@ class CandlestickPatterns:
     # Pattern Modifiers and Strength Indicators
     @staticmethod
     def calculate_pattern_strength(df, pattern_indices, volatility_window=20):
-        """
-        Calculate pattern strength based on:
-        - Relative candle size to historical volatility
-        - Volume confirmation
-        - Price range relative to recent trading range
-        """
+        """Calculate pattern strength based on volatility and volume"""
         # Calculate historical volatility
         log_returns = np.log(df['Close'] / df['Close'].shift(1))
         historical_volatility = log_returns.rolling(window=volatility_window).std()
         
-        # Calculate average true range (ATR)
+        # Calculate ATR
         high_low = df['High'] - df['Low']
         high_close = (df['High'] - df['Close'].shift(1)).abs()
         low_close = (df['Low'] - df['Close'].shift(1)).abs()
@@ -715,12 +683,12 @@ class CandlestickPatterns:
         
         for idx in pattern_indices[pattern_indices].index:
             # Calculate body size relative to ATR
-            body_size = abs(df.loc[idx, 'Close'] - df.loc[idx, 'Open'])
+            body_size = abs(df['Close'][idx] - df['Open'][idx])
             body_strength = body_size / atr[idx]
             
             # Calculate price movement relative to volatility
-            price_movement = abs(df.loc[idx, 'Close'] - df.loc[idx, 'Close'].shift(1)[idx])
-            volatility_strength = price_movement / (historical_volatility[idx] * df.loc[idx, 'Close'])
+            price_movement = abs(df['Close'][idx] - df['Close'].shift(1).loc[idx])
+            volatility_strength = price_movement / (historical_volatility[idx] * df['Close'][idx])
             
             # Combine factors
             strength_scores[idx] = (
@@ -728,9 +696,8 @@ class CandlestickPatterns:
                 volatility_strength * 0.4 +
                 volume_strength[idx] * 0.2
             )
-            
+        
         return strength_scores
-
     # Complex Multi-Candle Patterns
     @staticmethod
     def detect_three_line_strike(df, threshold=0.01):
@@ -853,68 +820,64 @@ class CandlestickPatterns:
     # Pattern Combinations and Complex Setups
     @staticmethod
     def detect_pattern_combinations(df, lookback_window=5):
-        """
-        Detect multiple patterns occurring together for stronger signals
-        """
+        """Detect multiple patterns occurring together for stronger signals"""
         combinations = pd.DataFrame(index=df.index)
         
         # Get individual pattern signals
         doji = CandlestickPatterns.detect_doji(df)
-        hammer_bull, hammer_bear = CandlestickPatterns.detect_hammer(df)
-        engulfing_bull, engulfing_bear = CandlestickPatterns.detect_engulfing(df)
+        hammer = CandlestickPatterns.detect_hammer(df)
+        bullish_engulfing, bearish_engulfing = CandlestickPatterns.detect_engulfing(df)
         
         # Complex Bullish Combinations
         combinations['strong_bullish'] = (
             # Bullish engulfing after a doji
-            (doji.shift(1) & engulfing_bull) |
+            (doji.shift(1) & bullish_engulfing) |
             # Hammer followed by bullish engulfing
-            (hammer_bull.shift(1) & engulfing_bull) |
+            (hammer.shift(1) & bullish_engulfing) |
             # Multiple doji at support
-            (doji & doji.shift(1) & (df['Close'] < df['Close'].rolling(lookback_window).min()))
+            (doji & doji.shift(1) & 
+            (df['Close'] < df['Close'].rolling(lookback_window).min()))
         )
         
         # Complex Bearish Combinations
         combinations['strong_bearish'] = (
             # Bearish engulfing after a doji
-            (doji.shift(1) & engulfing_bear) |
-            # Shooting star followed by bearish engulfing
-            (hammer_bear.shift(1) & engulfing_bear) |
+            (doji.shift(1) & bearish_engulfing) |
             # Multiple doji at resistance
-            (doji & doji.shift(1) & (df['Close'] > df['Close'].rolling(lookback_window).max()))
+            (doji & doji.shift(1) & 
+            (df['Close'] > df['Close'].rolling(lookback_window).max()))
         )
         
         return combinations
 
     @staticmethod
     def detect_volatility_adjusted_patterns(df, window=20):
-        """
-        Detect patterns with volatility-based thresholds
-        """
+        """Detect patterns with volatility-based thresholds"""
+        patterns = pd.DataFrame(index=df.index)
+        
         # Calculate volatility metrics
         atr = CandlestickPatterns._calculate_atr(df, window)
-        volatility = df['Close'].rolling(window=window).std()
+        volatility = df['Close'].pct_change().rolling(window=window).std()
         
         # Adjust thresholds based on volatility
-        dynamic_threshold = atr / df['Close'] * 100
-        
-        patterns = pd.DataFrame(index=df.index)
+        dynamic_threshold = atr / df['Close']
         
         # Volatile Bullish Engulfing
         patterns['volatile_bullish_engulfing'] = (
             (df['Close'] > df['Open']) &
             (df['Open'] < df['Close'].shift(1)) &
             (df['Close'] > df['Open'].shift(1)) &
-            (abs(df['Close'] - df['Open']) > dynamic_threshold * 1.5)
+            (abs(df['Close'] - df['Open']) > atr * 1.5)
         )
         
         # Low Volatility Breakout
         patterns['low_vol_breakout'] = (
-            (df['Close'] > df['High'].rolling(window=window).max()) &
+            (df['Close'] > df['High'].rolling(window=window).max().shift(1)) &
             (volatility < volatility.rolling(window=window).mean() * 0.5)
         )
         
         return patterns
-
+    
     @staticmethod
     def _calculate_atr(df, window):
         """Helper function to calculate Average True Range"""
@@ -958,10 +921,7 @@ class CandlestickPatterns:
 
     @staticmethod
     def detect_pattern_reliability(df, pattern_func, lookback_window=100, forward_window=20):
-        """
-        Calculate pattern reliability based on historical performance
-        """
-        # Get pattern signals
+        """Calculate pattern reliability based on historical performance"""
         pattern_signals = pattern_func(df)
         
         reliability_metrics = {
@@ -970,32 +930,33 @@ class CandlestickPatterns:
             'risk_reward': []
         }
         
-        for idx in pattern_signals[pattern_signals].index:
-            if idx + forward_window >= len(df):
+        for i in range(len(df) - forward_window):
+            if not pattern_signals.iloc[i]:
                 continue
                 
-            # Calculate forward returns
-            forward_return = (df['Close'][idx + forward_window] - df['Close'][idx]) / df['Close'][idx]
+            # Calculate forward returns using integer indexing
+            forward_return = (df['Close'].iloc[i + forward_window] - df['Close'].iloc[i]) / df['Close'].iloc[i]
             
-            # Calculate success rate
-            historical_signals = pattern_signals[max(0, idx - lookback_window):idx]
+            # Calculate historical success rate
+            historical_start = max(0, i - lookback_window)
+            historical_signals = pattern_signals.iloc[historical_start:i]
             historical_success = sum(
-                (df['Close'][i + forward_window] - df['Close'][i]) / df['Close'][i] > 0
-                for i in historical_signals[historical_signals].index
-                if i + forward_window < len(df)
+                (df['Close'].iloc[j + forward_window] - df['Close'].iloc[j]) / df['Close'].iloc[j] > 0
+                for j in range(historical_start, i)
+                if historical_signals.iloc[j - historical_start] and j + forward_window < len(df)
             ) / max(1, len(historical_signals[historical_signals]))
             
             reliability_metrics['success_rate'].append(historical_success)
             reliability_metrics['avg_return'].append(forward_return)
             
             # Calculate risk-reward ratio
-            stop_loss = df['Low'][idx:idx + forward_window].min()
-            take_profit = df['High'][idx:idx + forward_window].max()
-            risk_reward = abs((take_profit - df['Close'][idx]) / (df['Close'][idx] - stop_loss))
+            stop_loss = df['Low'].iloc[i:i + forward_window].min()
+            take_profit = df['High'].iloc[i:i + forward_window].max()
+            risk_reward = abs((take_profit - df['Close'].iloc[i]) / (df['Close'].iloc[i] - stop_loss))
             reliability_metrics['risk_reward'].append(risk_reward)
         
         return pd.DataFrame(reliability_metrics)
-
+    
     @staticmethod
     def detect_harmonic_patterns(df, tolerance=0.05):
         """

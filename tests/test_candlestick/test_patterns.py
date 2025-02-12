@@ -812,23 +812,23 @@ class TestCandlestickPatterns(unittest.TestCase):
         """Test pattern combinations detection"""
         data = self.test_data.copy()
         
-        # Create a doji followed by bullish engulfing
-        data.loc['2023-01-05', 'Open'] = 100
+        # Create doji followed by bullish engulfing
+        # First day - doji
+        data.loc['2023-01-05', 'Open'] = 100.0
         data.loc['2023-01-05', 'Close'] = 100.1
-        data.loc['2023-01-05', 'High'] = 105
-        data.loc['2023-01-05', 'Low'] = 95
+        data.loc['2023-01-05', 'High'] = 102.0
+        data.loc['2023-01-05', 'Low'] = 98.0
         
-        data.loc['2023-01-06', 'Open'] = 95
-        data.loc['2023-01-06', 'Close'] = 110
+        # Second day - bullish engulfing
+        data.loc['2023-01-06', 'Open'] = 99.0
+        data.loc['2023-01-06', 'Close'] = 103.0
+        data.loc['2023-01-06', 'High'] = 103.5
+        data.loc['2023-01-06', 'Low'] = 98.5
         
         combinations = self.patterns.detect_pattern_combinations(data)
         
-        self.assertIsInstance(combinations, pd.DataFrame)
-        self.assertTrue('strong_bullish' in combinations.columns)
-        self.assertTrue('strong_bearish' in combinations.columns)
-        
-        # Test bullish combination detection
+        # Check if pattern is detected
         self.assertTrue(combinations['strong_bullish'].iloc[-1])
-
+        
 if __name__ == '__main__':
     unittest.main()

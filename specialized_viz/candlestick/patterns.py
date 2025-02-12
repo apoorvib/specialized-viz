@@ -81,65 +81,76 @@ class CandlestickPatterns:
     @staticmethod
     def detect_three_white_soldiers(df, price_threshold=0.1):
         """Detect three white soldiers pattern"""
+        body = abs(df['Close'] - df['Open'])
+        
         return (
             # Three consecutive bullish candles
             (df['Close'] > df['Open']) &
             (df['Close'].shift(1) > df['Open'].shift(1)) &
             (df['Close'].shift(2) > df['Open'].shift(2)) &
-            # Each opens within previous body
-            (df['Open'] > df['Close'].shift(1)) &
-            (df['Open'].shift(1) > df['Close'].shift(2)) &
-            # Each closes higher than previous
+            
+            # Progressive higher closes
             (df['Close'] > df['Close'].shift(1)) &
             (df['Close'].shift(1) > df['Close'].shift(2)) &
-            # Small upper shadows relative to body
-            ((df['High'] - df['Close']) / (df['Close'] - df['Open']) < price_threshold) &
-            ((df['High'].shift(1) - df['Close'].shift(1)) / 
-            (df['Close'].shift(1) - df['Open'].shift(1)) < price_threshold) &
-            ((df['High'].shift(2) - df['Close'].shift(2)) / 
-            (df['Close'].shift(2) - df['Open'].shift(2)) < price_threshold)
+            
+            # Opens within previous candle's body
+            (df['Open'] > df['Open'].shift(1)) &
+            (df['Open'] < df['Close'].shift(1)) &
+            (df['Open'].shift(1) > df['Open'].shift(2)) &
+            (df['Open'].shift(1) < df['Close'].shift(2)) &
+            
+            # Small upper shadows
+            ((df['High'] - df['Close']) / (body + 0.0001) < price_threshold) &
+            ((df['High'].shift(1) - df['Close'].shift(1)) / (body.shift(1) + 0.0001) < price_threshold) &
+            ((df['High'].shift(2) - df['Close'].shift(2)) / (body.shift(2) + 0.0001) < price_threshold)
         )
-        
+
     @staticmethod
     def detect_three_black_crows(df, price_threshold=0.1):
-        """
-        Detect three black crows pattern (opposite of three white soldiers)
-        """
+        """Detect three black crows pattern"""
+        body = abs(df['Close'] - df['Open'])
+        
         return (
             # Three consecutive bearish candles
             (df['Close'] < df['Open']) &
             (df['Close'].shift(1) < df['Open'].shift(1)) &
             (df['Close'].shift(2) < df['Open'].shift(2)) &
-            # Each opens within previous body
-            (df['Open'] < df['Open'].shift(1)) &
-            (df['Open'].shift(1) < df['Open'].shift(2)) &
-            # Each closes lower than previous
+            
+            # Progressive lower closes
             (df['Close'] < df['Close'].shift(1)) &
             (df['Close'].shift(1) < df['Close'].shift(2)) &
+            
+            # Opens within previous candle's body
+            (df['Open'] < df['Open'].shift(1)) &
+            (df['Open'] > df['Close'].shift(1)) &
+            (df['Open'].shift(1) < df['Open'].shift(2)) &
+            (df['Open'].shift(1) > df['Close'].shift(2)) &
+            
             # Small lower shadows
-            (((df['Close'] - df['Low']) / (df['Open'] - df['Close'])) < price_threshold) &
-            (((df['Close'].shift(1) - df['Low'].shift(1)) / 
-              (df['Open'].shift(1) - df['Close'].shift(1))) < price_threshold) &
-            (((df['Close'].shift(2) - df['Low'].shift(2)) / 
-              (df['Open'].shift(2) - df['Close'].shift(2))) < price_threshold)
+            ((df['Close'] - df['Low']) / (body + 0.0001) < price_threshold) &
+            ((df['Close'].shift(1) - df['Low'].shift(1)) / (body.shift(1) + 0.0001) < price_threshold) &
+            ((df['Close'].shift(2) - df['Low'].shift(2)) / (body.shift(2) + 0.0001) < price_threshold)
         )
-
+        
     @staticmethod
     def detect_shooting_star(df, body_ratio=0.3, shadow_ratio=2.0):
-        """
-        Detect shooting star pattern (inverse of hammer)
-        """
+        """Detect shooting star pattern (inverse of hammer)"""
         body = abs(df['Close'] - df['Open'])
         total_length = df['High'] - df['Low']
         upper_shadow = df['High'] - df[['Open', 'Close']].max(axis=1)
         lower_shadow = df[['Open', 'Close']].min(axis=1) - df['Low']
         
         return (
-            (body / total_length < body_ratio) &  # Small body
-            (upper_shadow / body > shadow_ratio) &  # Long upper shadow
-            (lower_shadow < body)  # Small lower shadow
+            # Small body
+            (body / total_length < body_ratio) &
+            # Long upper shadow
+            (upper_shadow / (body + 0.0001) > shadow_ratio) &  # Add small constant to avoid division by zero
+            # Small lower shadow
+            (lower_shadow < body) &
+            # Appears in uptrend
+            (df['Close'].shift(1) > df['Close'].shift(5))  # Simple trend check
         )
-
+        
     @staticmethod
     def detect_harami(df):
         """
@@ -310,30 +321,34 @@ class CandlestickPatterns:
     
     @staticmethod
     def detect_rising_three_methods(df, threshold=0.01):
-        """
-        Detect Rising Three Methods (Bullish Continuation)
-        Also known as Bullish Rising Three Methods or Bullish Three Methods
-        """
+        """Detect Rising Three Methods (Bullish Continuation)"""
+        # Calculate relative body sizes
+        body = abs(df['Close'] - df['Open'])
+        body_size = body / df['Close']
+        
         return (
             # First day is a long bullish candle
             (df['Close'].shift(4) > df['Open'].shift(4)) &
-            (df['Close'].shift(4) - df['Open'].shift(4) > threshold) &
+            (body_size.shift(4) > threshold) &
             
-            # Next three days are small bearish candles contained within first day's range
+            # Next three days are small bearish candles within first day's range
             (df['Open'].shift(3) > df['Close'].shift(3)) &  # Bearish
             (df['Open'].shift(2) > df['Close'].shift(2)) &  # Bearish
             (df['Open'].shift(1) > df['Close'].shift(1)) &  # Bearish
             
-            # Small bodies for middle three days
-            ((df['Open'].shift(3) - df['Close'].shift(3)) < (df['Close'].shift(4) - df['Open'].shift(4))) &
-            ((df['Open'].shift(2) - df['Close'].shift(2)) < (df['Close'].shift(4) - df['Open'].shift(4))) &
-            ((df['Open'].shift(1) - df['Close'].shift(1)) < (df['Close'].shift(4) - df['Open'].shift(4))) &
+            # Small bodies contained within first day's range
+            (df['High'].shift(3) < df['High'].shift(4)) &
+            (df['Low'].shift(3) > df['Low'].shift(4)) &
+            (df['High'].shift(2) < df['High'].shift(4)) &
+            (df['Low'].shift(2) > df['Low'].shift(4)) &
+            (df['High'].shift(1) < df['High'].shift(4)) &
+            (df['Low'].shift(1) > df['Low'].shift(4)) &
             
-            # Last day is a strong bullish candle breaking above first day's high
+            # Last day is a strong bullish candle breaking above
             (df['Close'] > df['Open']) &
-            (df['Close'] > df['High'].shift(4))
+            (df['Close'] > df['High'].shift(4)) &
+            (body_size > threshold)
         )
-
     @staticmethod
     def detect_falling_three_methods(df, threshold=0.01):
         """
@@ -454,37 +469,32 @@ class CandlestickPatterns:
 
     @staticmethod
     def detect_tri_star(df, doji_threshold=0.1):
-        """
-        Detect Tri-Star pattern (both bullish and bearish)
-        """
-        # Helper function to detect doji
-        is_doji = lambda o, h, l, c: abs(c - o) < (h - l) * doji_threshold
+        """Detect Tri-Star pattern (both bullish and bearish)"""
+        def is_doji(opens, highs, lows, closes):
+            body = abs(closes - opens)
+            total_range = highs - lows
+            return body < (total_range * doji_threshold)
+        
+        # Detect doji for each day
+        doji_today = is_doji(df['Open'], df['High'], df['Low'], df['Close'])
+        doji_prev = is_doji(df['Open'].shift(1), df['High'].shift(1), 
+                            df['Low'].shift(1), df['Close'].shift(1))
+        doji_prev2 = is_doji(df['Open'].shift(2), df['High'].shift(2), 
+                            df['Low'].shift(2), df['Close'].shift(2))
         
         bullish = (
-            # Three consecutive doji
-            is_doji(df['Open'].shift(2), df['High'].shift(2), df['Low'].shift(2), df['Close'].shift(2)) &
-            is_doji(df['Open'].shift(1), df['High'].shift(1), df['Low'].shift(1), df['Close'].shift(1)) &
-            is_doji(df['Open'], df['High'], df['Low'], df['Close']) &
-            
-            # Middle doji gaps down (for bullish)
-            (df['High'].shift(1) < df['Low'].shift(2)) &
-            # Last doji gaps up
-            (df['Low'] > df['High'].shift(1))
+            doji_today & doji_prev & doji_prev2 &
+            (df['Low'].shift(1) < df['Low'].shift(2)) &  # Second doji gaps down
+            (df['Low'] > df['High'].shift(1))  # Third doji gaps up
         )
         
         bearish = (
-            # Three consecutive doji
-            is_doji(df['Open'].shift(2), df['High'].shift(2), df['Low'].shift(2), df['Close'].shift(2)) &
-            is_doji(df['Open'].shift(1), df['High'].shift(1), df['Low'].shift(1), df['Close'].shift(1)) &
-            is_doji(df['Open'], df['High'], df['Low'], df['Close']) &
-            
-            # Middle doji gaps up (for bearish)
-            (df['Low'].shift(1) > df['High'].shift(2)) &
-            # Last doji gaps down
-            (df['High'] < df['Low'].shift(1))
+            doji_today & doji_prev & doji_prev2 &
+            (df['High'].shift(1) > df['High'].shift(2)) &  # Second doji gaps up
+            (df['High'] < df['Low'].shift(1))  # Third doji gaps down
         )
         
-        return bullish, bearish
+        return pd.Series(bullish), pd.Series(bearish)    
     
     @staticmethod
     def detect_ladder_bottom(df, threshold=0.01):
@@ -524,27 +534,32 @@ class CandlestickPatterns:
 
     @staticmethod
     def detect_mat_hold(df, threshold=0.01):
-        """
-        Detect Mat Hold pattern (Bullish Continuation)
-        """
+        """Detect Mat Hold pattern (Bullish Continuation)"""
+        # Calculate relative body sizes
+        body = abs(df['Close'] - df['Open'])
+        body_size = body / df['Close']
+        
         return (
             # First day is a strong bullish candle
             (df['Close'].shift(4) > df['Open'].shift(4)) &
-            (df['Close'].shift(4) - df['Open'].shift(4) > threshold) &
+            (body_size.shift(4) > threshold) &
             
-            # Gap up on second day
+            # Gap up after first day
             (df['Low'].shift(3) > df['High'].shift(4)) &
             
-            # Three small bearish candles
+            # Three small bearish candles, staying above first day's close
             (df['Close'].shift(3) < df['Open'].shift(3)) &
             (df['Close'].shift(2) < df['Open'].shift(2)) &
             (df['Close'].shift(1) < df['Open'].shift(1)) &
+            (df['Low'].shift(3) > df['Close'].shift(4)) &
+            (df['Low'].shift(2) > df['Close'].shift(4)) &
+            (df['Low'].shift(1) > df['Close'].shift(4)) &
             
-            # Final bullish candle
+            # Final bullish candle breaks above resistance
             (df['Close'] > df['Open']) &
             (df['Close'] > df['High'].shift(4))
         )
-
+        
     @staticmethod
     def detect_stick_sandwich(df, price_threshold=0.001):
         """
@@ -562,21 +577,21 @@ class CandlestickPatterns:
 
     @staticmethod
     def detect_upside_gap_three_methods(df, gap_threshold=0.01):
-        """
-        Detect Upside Gap Three Methods (Bullish Continuation)
-        """
+        """Detect Upside Gap Three Methods (Bullish Continuation)"""
         return (
             # First day bullish
             (df['Close'].shift(2) > df['Open'].shift(2)) &
             # Second day gaps up and bullish
-            (df['Low'].shift(1) > df['High'].shift(2) + gap_threshold) &
+            (df['Low'].shift(1) > df['High'].shift(2) * (1 + gap_threshold)) &
             (df['Close'].shift(1) > df['Open'].shift(1)) &
-            # Third day opens within gap and closes below second day's open
-            (df['Open'] < df['Low'].shift(1)) &
+            # Third day fills the gap
+            (df['Open'] < df['Close'].shift(1)) &
             (df['Open'] > df['High'].shift(2)) &
-            (df['Close'] < df['Open'].shift(1))
+            (df['Close'] > df['Open'].shift(1)) &
+            # Confirming the trend
+            (df['Close'].rolling(5).mean() > df['Close'].rolling(20).mean())
         )
-
+        
     @staticmethod
     def detect_downside_gap_three_methods(df, gap_threshold=0.01):
         """
@@ -763,31 +778,31 @@ class CandlestickPatterns:
 
     @staticmethod
     def detect_island_reversal(df, gap_threshold=0.01):
-        """
-        Detect Island Reversal patterns
-        """
+        """Detect Island Reversal patterns"""
         bullish = (
-            # Gap down into isolated price action
-            (df['High'].shift(2) < df['Low'].shift(1) - gap_threshold) &
+            # Gap down into island
+            (df['High'].shift(2) < df['Low'].shift(1) * (1 - gap_threshold)) &
             # Gap up out of island
-            (df['Low'] > df['High'].shift(1) + gap_threshold) &
-            # Price and volume characteristics of island
-            (df['Volume'].shift(1) > df['Volume'].shift(2)) &
-            (df['Close'].shift(1) < df['Open'].shift(1))
+            (df['Low'] > df['High'].shift(1) * (1 + gap_threshold)) &
+            # Island characteristics
+            (df['Volume'].shift(1) > df['Volume'].rolling(5).mean().shift(1)) &
+            (df['Close'].shift(1) < df['Open'].shift(1)) &
+            (df['Close'] > df['Open'])  # Confirmation candle
         )
         
         bearish = (
-            # Gap up into isolated price action
-            (df['Low'].shift(2) > df['High'].shift(1) + gap_threshold) &
+            # Gap up into island
+            (df['Low'].shift(2) > df['High'].shift(1) * (1 + gap_threshold)) &
             # Gap down out of island
-            (df['High'] < df['Low'].shift(1) - gap_threshold) &
-            # Price and volume characteristics of island
-            (df['Volume'].shift(1) > df['Volume'].shift(2)) &
-            (df['Close'].shift(1) > df['Open'].shift(1))
+            (df['High'] < df['Low'].shift(1) * (1 - gap_threshold)) &
+            # Island characteristics
+            (df['Volume'].shift(1) > df['Volume'].rolling(5).mean().shift(1)) &
+            (df['Close'].shift(1) > df['Open'].shift(1)) &
+            (df['Close'] < df['Open'])  # Confirmation candle
         )
         
-        return bullish, bearish
-
+        return pd.Series(bullish), pd.Series(bearish)
+    
     @staticmethod
     def detect_thrust_pattern(df, threshold=0.01):
         """
@@ -857,26 +872,26 @@ class CandlestickPatterns:
         
         # Calculate volatility metrics
         atr = CandlestickPatterns._calculate_atr(df, window)
-        volatility = df['Close'].pct_change().rolling(window=window).std()
+        returns = df['Close'].pct_change()
+        volatility = returns.rolling(window=window).std()
         
-        # Adjust thresholds based on volatility
-        dynamic_threshold = atr / df['Close']
+        # Dynamic thresholds
+        vol_threshold = volatility * df['Close']
         
-        # Volatile Bullish Engulfing
         patterns['volatile_bullish_engulfing'] = (
             (df['Close'] > df['Open']) &
             (df['Open'] < df['Close'].shift(1)) &
             (df['Close'] > df['Open'].shift(1)) &
-            (abs(df['Close'] - df['Open']) > atr * 1.5)
+            (abs(df['Close'] - df['Open']) > 1.5 * vol_threshold)
         )
         
-        # Low Volatility Breakout
         patterns['low_vol_breakout'] = (
             (df['Close'] > df['High'].rolling(window=window).max().shift(1)) &
-            (volatility < volatility.rolling(window=window).mean() * 0.5)
+            (volatility < volatility.rolling(window=window).mean() * 0.5) &
+            (df['Volume'] > df['Volume'].rolling(window=window).mean())
         )
         
-        return patterns
+        return patterns    
     
     @staticmethod
     def _calculate_atr(df, window):

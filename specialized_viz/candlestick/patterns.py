@@ -131,30 +131,7 @@ class CandlestickPatterns:
             ((df['Close'].shift(1) - df['Low'].shift(1)) / (body.shift(1) + 0.0001) < price_threshold) &
             ((df['Close'].shift(2) - df['Low'].shift(2)) / (body.shift(2) + 0.0001) < price_threshold)
         )
-        
-    @staticmethod
-    def detect_shooting_star(df, body_ratio=0.3, shadow_ratio=2.0):
-        """Detect shooting star pattern (inverse of hammer)"""
-        body = abs(df['Close'] - df['Open'])
-        total_length = df['High'] - df['Low']
-        upper_shadow = df['High'] - df[['Open', 'Close']].max(axis=1)
-        lower_shadow = df[['Open', 'Close']].min(axis=1) - df['Low']
-        
-        # Add relative_body_size to avoid division by zero
-        relative_body_size = body / (total_length + 0.0001)
-        relative_upper_shadow = upper_shadow / (body + 0.0001)
-        
-        # Check for uptrend using simple moving average
-        uptrend = df['Close'] > df['Close'].rolling(window=5).mean()
-        
-        return (
-            uptrend &
-            (relative_body_size < body_ratio) &  # Small body
-            (relative_upper_shadow > shadow_ratio) &  # Long upper shadow
-            (lower_shadow < 0.5 * body)  # Very small lower shadow
-        )
-
-                
+                        
     @staticmethod
     def detect_harami(df):
         """
@@ -544,25 +521,6 @@ class CandlestickPatterns:
             # Second day opens near first day's open
             (abs(df['Open'] - df['Open'].shift(1)) < price_threshold * 3)
         )
-
-    @staticmethod
-    def detect_mat_hold(df, threshold=0.01):
-        """Detect Mat Hold pattern (Bullish Continuation)"""        
-        return (
-                # First day is strong bullish
-                (df['Close'].shift(4) > df['Open'].shift(4)) &
-                # Small bearish days contained within first day's range
-                (df['Close'].shift(3) < df['Open'].shift(3)) &
-                (df['Close'].shift(2) < df['Open'].shift(2)) &
-                (df['Close'].shift(1) < df['Open'].shift(1)) &
-                # Three bearish days stay above first day's close
-                (df['Low'].shift(3) > df['Close'].shift(4)) &
-                (df['Low'].shift(2) > df['Close'].shift(4)) &
-                (df['Low'].shift(1) > df['Close'].shift(4)) &
-                # Final bullish day
-                (df['Close'] > df['Open']) &
-                (df['Close'] > df['High'].shift(4))  # Breaks above first day's high
-            )
         
     @staticmethod
     def detect_stick_sandwich(df, price_threshold=0.001):
@@ -579,26 +537,6 @@ class CandlestickPatterns:
             (abs(df['Close'] - df['Close'].shift(2)) < price_threshold)
         )
 
-    @staticmethod
-    def detect_upside_gap_three_methods(df, gap_threshold=0.01):
-        """Detect Upside Gap Three Methods (Bullish Continuation)"""
-        return (
-            # First day bullish
-            (df['Close'].shift(2) > df['Open'].shift(2)) &
-            
-            # Second day gaps up and bullish
-            (df['Low'].shift(1) > df['High'].shift(2)) &
-            (df['Close'].shift(1) > df['Open'].shift(1)) &
-            
-            # Third day opens within second day's range and closes lower
-            (df['Open'] > df['Low'].shift(1)) &
-            (df['Open'] < df['High'].shift(1)) &
-            (df['Close'] < df['Open'].shift(1)) &
-            
-            # Overall uptrend
-            (df['Close'].rolling(window=5).mean() > df['Close'].rolling(window=20).mean())
-        )
-            
     @staticmethod
     def detect_downside_gap_three_methods(df, gap_threshold=0.01):
         """
@@ -635,41 +573,6 @@ class CandlestickPatterns:
         )
         
         return pd.Series(bullish), pd.Series(bearish)  # Explicitly return Series
-
-    @staticmethod
-    def detect_eight_new_price_lines(df):
-        """Detect Eight New Price Lines pattern (Continuation)"""
-        bullish = pd.Series(False, index=df.index)
-        bearish = pd.Series(False, index=df.index)
-        
-        # Need at least 8 days of data
-        if len(df) < 8:
-            return bullish, bearish
-            
-        for i in range(7, len(df)):
-            # Get the sequence of 8 days ending at current index
-            sequence = df.iloc[i-7:i+1]
-            
-            # Check for eight consecutively higher highs and lows
-            is_bullish = True
-            for j in range(1, len(sequence)):
-                if (sequence['High'].iloc[j] <= sequence['High'].iloc[j-1] or 
-                    sequence['Low'].iloc[j] <= sequence['Low'].iloc[j-1]):
-                    is_bullish = False
-                    break
-            
-            # Check for eight consecutively lower highs and lows
-            is_bearish = True
-            for j in range(1, len(sequence)):
-                if (sequence['High'].iloc[j] >= sequence['High'].iloc[j-1] or 
-                    sequence['Low'].iloc[j] >= sequence['Low'].iloc[j-1]):
-                    is_bearish = False
-                    break
-            
-            bullish.iloc[i] = is_bullish
-            bearish.iloc[i] = is_bearish
-        
-        return bullish, bearish
       
     @staticmethod
     def detect_gapping_side_by_side_white_lines(df, gap_threshold=0.01):
@@ -790,22 +693,6 @@ class CandlestickPatterns:
         breakouts['volume_confirmed'] = df['Volume'] > (volume_ma * 1.5)
         
         return breakouts
-
-    @staticmethod
-    def detect_island_reversal(df, gap_threshold=0.01):
-        """Detect Island Reversal patterns"""
-        bullish = pd.Series(False, index=df.index)
-        bearish = pd.Series(False, index=df.index)
-        
-        bullish = (
-            (df['High'].shift(2) < df['Low'].shift(1) - gap_threshold) &  # Gap down into island
-            (df['Low'] > df['High'].shift(1) + gap_threshold) &  # Gap up from island
-            (df['Volume'].shift(1) > df['Volume'].shift(2)) &  # Increased volume
-            (df['Close'].shift(1) < df['Open'].shift(1)) &  # Island is bearish
-            (df['Close'] > df['Open'])  # Final day bullish
-        )
-    
-        return bullish, bearish    
     
     @staticmethod
     def detect_thrust_pattern(df, threshold=0.01):
@@ -835,6 +722,92 @@ class CandlestickPatterns:
         )
         
         return bullish, bearish
+    
+    @staticmethod
+    def detect_island_reversal(df, gap_threshold=0.01):
+        """Detect Island Reversal patterns"""
+        bullish = pd.Series(False, index=df.index)
+        bearish = pd.Series(False, index=df.index)
+        
+        for i in range(2, len(df)):
+            # Detailed price level debug
+            print(f"\nDetailed price analysis for {df.index[i]}:")
+            print(f"Day 1: O:{df['Open'].iloc[i-2]:.2f} H:{df['High'].iloc[i-2]:.2f} "
+                f"L:{df['Low'].iloc[i-2]:.2f} C:{df['Close'].iloc[i-2]:.2f}")
+            print(f"Island day: O:{df['Open'].iloc[i-1]:.2f} H:{df['High'].iloc[i-1]:.2f} "
+                f"L:{df['Low'].iloc[i-1]:.2f} C:{df['Close'].iloc[i-1]:.2f}")
+            print(f"Final day: O:{df['Open'].iloc[i]:.2f} H:{df['High'].iloc[i]:.2f} "
+                f"L:{df['Low'].iloc[i]:.2f} C:{df['Close'].iloc[i]:.2f}")
+            
+            # Gap calculations
+            gap_down = df['High'].iloc[i-1] < df['Low'].iloc[i-2]
+            gap_up = df['Low'].iloc[i] > df['High'].iloc[i-1]
+            
+            # Volume analysis
+            vol_increase = df['Volume'].iloc[i-1] > df['Volume'].iloc[i-2]
+            print(f"Volume sequence: {df['Volume'].iloc[i-2]:.0f} -> "
+                f"{df['Volume'].iloc[i-1]:.0f} -> {df['Volume'].iloc[i]:.0f}")
+            
+            # Pattern completion check
+            final_bullish = df['Close'].iloc[i] > df['Open'].iloc[i]
+            
+            bullish.iloc[i] = (gap_down and gap_up and vol_increase and final_bullish)
+            
+            print(f"Pattern conditions: Gaps({gap_down},{gap_up}), "
+                f"Volume({vol_increase}), Final({final_bullish})")
+            
+        return bullish, bearish
+
+    @staticmethod
+    def detect_mat_hold(df, threshold=0.01):
+        """Detect Mat Hold pattern"""
+        result = pd.Series(False, index=df.index)
+        
+        for i in range(4, len(df)):
+            print(f"\nAnalyzing sequence at {df.index[i]}:")
+            
+            # First day analysis
+            first_day_bullish = df['Close'].iloc[i-4] > df['Open'].iloc[i-4]
+            first_day_body = df['Close'].iloc[i-4] - df['Open'].iloc[i-4]
+            first_body_size = abs(first_day_body)
+            print(f"First day: O:{df['Open'].iloc[i-4]:.2f} C:{df['Close'].iloc[i-4]:.2f} "
+                f"Body:{first_body_size:.2f}")
+            
+            # Three bearish days analysis
+            bearish_days = []
+            contained_bodies = []
+            for j in range(3):
+                curr_idx = i - 3 + j
+                is_bearish = df['Close'].iloc[curr_idx] < df['Open'].iloc[curr_idx]
+                
+                # Check if body (not full range) is contained
+                curr_high = max(df['Open'].iloc[curr_idx], df['Close'].iloc[curr_idx])
+                curr_low = min(df['Open'].iloc[curr_idx], df['Close'].iloc[curr_idx])
+                first_high = max(df['Open'].iloc[i-4], df['Close'].iloc[i-4])
+                first_low = min(df['Open'].iloc[i-4], df['Close'].iloc[i-4])
+                
+                is_contained = curr_high <= first_high and curr_low >= first_low
+                
+                print(f"Day {j+1}: O:{df['Open'].iloc[curr_idx]:.2f} "
+                    f"C:{df['Close'].iloc[curr_idx]:.2f} "
+                    f"Bearish:{is_bearish} Contained:{is_contained}")
+                
+                bearish_days.append(is_bearish)
+                contained_bodies.append(is_contained)
+            
+            # Final day analysis
+            final_bullish = df['Close'].iloc[i] > df['Open'].iloc[i]
+            breaks_high = df['Close'].iloc[i] > df['High'].iloc[i-4]
+            print(f"Final day: O:{df['Open'].iloc[i]:.2f} C:{df['Close'].iloc[i]:.2f} "
+                f"Bullish:{final_bullish} Breaks high:{breaks_high}")
+            
+            result.iloc[i] = (first_day_bullish and 
+                            all(bearish_days) and 
+                            all(contained_bodies) and
+                            final_bullish and 
+                            breaks_high)
+        
+        return result
 
     # Pattern Combinations and Complex Setups
     @staticmethod
@@ -869,25 +842,6 @@ class CandlestickPatterns:
         )
         
         return combinations
-
-    @staticmethod
-    def detect_volatility_adjusted_patterns(df, window=20):
-        """Detect patterns with volatility-based thresholds"""
-        patterns = pd.DataFrame(index=df.index)
-        
-        # Calculate volatility metrics
-        returns = df['Close'].pct_change()
-        volatility = returns.rolling(window=window, min_periods=1).std()
-        
-        patterns['volatile_bullish_engulfing'] = (
-            (df['Close'] > df['Open']) &
-            (df['Open'] < df['Close'].shift(1)) &
-            (df['Close'] > df['Open'].shift(1)) &
-            # Use relative volatility threshold
-            (abs(df['Close'] - df['Open']) > volatility * df['Close'] * 1.5)
-        )
-        
-        return patterns    
     
     @staticmethod
     def _calculate_atr(df, window):
@@ -967,6 +921,162 @@ class CandlestickPatterns:
             reliability_metrics['risk_reward'].append(risk_reward)
         
         return pd.DataFrame(reliability_metrics)
+    
+    @staticmethod
+    def detect_shooting_star(df, body_ratio=0.3, shadow_ratio=2.0):
+        """Detect shooting star pattern"""
+        body = abs(df['Close'] - df['Open'])
+        total_length = df['High'] - df['Low']
+        upper_shadow = df['High'] - df[['Open', 'Close']].max(axis=1)
+        lower_shadow = df[['Open', 'Close']].min(axis=1) - df['Low']
+        
+        for i in range(len(df)):
+            print(f"\nAnalyzing potential shooting star at {df.index[i]}:")
+            print(f"Candle structure:")
+            print(f"  Open: {df['Open'].iloc[i]:.2f}")
+            print(f"  High: {df['High'].iloc[i]:.2f}")
+            print(f"  Low: {df['Low'].iloc[i]:.2f}")
+            print(f"  Close: {df['Close'].iloc[i]:.2f}")
+            
+            print(f"Measurements:")
+            print(f"  Body size: {body.iloc[i]:.2f}")
+            print(f"  Total length: {total_length.iloc[i]:.2f}")
+            print(f"  Upper shadow: {upper_shadow.iloc[i]:.2f}")
+            print(f"  Lower shadow: {lower_shadow.iloc[i]:.2f}")
+            
+            print(f"Ratios:")
+            print(f"  Body/Total ratio: {(body/total_length).iloc[i]:.3f} (should be < {body_ratio})")
+            print(f"  Upper/Body ratio: {(upper_shadow/body).iloc[i]:.3f} (should be > {shadow_ratio})")
+            print(f"  Lower shadow vs Body: {lower_shadow.iloc[i]:.2f} vs {body.iloc[i]:.2f}")
+        
+        return (
+            (body / total_length < body_ratio) &
+            (upper_shadow / body > shadow_ratio) &
+            (lower_shadow < body)
+        )
+
+    @staticmethod
+    def detect_eight_new_price_lines(df):
+        """Detect Eight New Price Lines pattern"""
+        bullish = pd.Series(False, index=df.index)
+        bearish = pd.Series(False, index=df.index)
+        
+        for i in range(7, len(df)):
+            sequence = df.iloc[i-7:i+1]
+            print(f"\nAnalyzing 8-day sequence ending at {df.index[i]}:")
+            print("Daily prices:")
+            for j, (idx, row) in enumerate(sequence.iterrows()):
+                print(f"Day {j+1} ({idx}):")
+                print(f"  High: {row['High']:.2f}")
+                print(f"  Low: {row['Low']:.2f}")
+            
+            highs = sequence['High'].values
+            lows = sequence['Low'].values
+            
+            # Check consecutive higher highs and lows
+            is_bullish = True
+            is_bearish = True
+            
+            print("\nChecking consecutive relationships:")
+            for j in range(1, 8):
+                high_increasing = highs[j] > highs[j-1]
+                low_increasing = lows[j] > lows[j-1]
+                print(f"Days {j}-{j+1}:")
+                print(f"  Highs: {highs[j-1]:.2f} -> {highs[j]:.2f} ({high_increasing})")
+                print(f"  Lows: {lows[j-1]:.2f} -> {lows[j]:.2f} ({low_increasing})")
+                
+                if not (high_increasing and low_increasing):
+                    is_bullish = False
+                    print("  Failed bullish criteria")
+            
+            bullish.iloc[i] = is_bullish
+            if is_bullish:
+                print("Found valid bullish sequence!")
+        
+        return bullish, bearish
+
+    @staticmethod
+    def detect_upside_gap_three_methods(df, gap_threshold=0.01):
+        """Detect Upside Gap Three Methods pattern"""
+        result = pd.Series(False, index=df.index)
+        
+        for i in range(2, len(df)):
+            print(f"\nAnalyzing potential three methods at {df.index[i]}:")
+            # First day analysis
+            first_bullish = df['Close'].iloc[i-2] > df['Open'].iloc[i-2]
+            print(f"First day (i-2):")
+            print(f"  O:{df['Open'].iloc[i-2]:.2f} H:{df['High'].iloc[i-2]:.2f} "
+                f"L:{df['Low'].iloc[i-2]:.2f} C:{df['Close'].iloc[i-2]:.2f}")
+            print(f"  Bullish: {first_bullish}")
+            
+            # Second day analysis
+            gap_up = df['Low'].iloc[i-1] > df['High'].iloc[i-2]
+            second_bullish = df['Close'].iloc[i-1] > df['Open'].iloc[i-1]
+            print(f"Second day (i-1):")
+            print(f"  O:{df['Open'].iloc[i-1]:.2f} H:{df['High'].iloc[i-1]:.2f} "
+                f"L:{df['Low'].iloc[i-1]:.2f} C:{df['Close'].iloc[i-1]:.2f}")
+            print(f"  Gap up: {gap_up}")
+            print(f"  Bullish: {second_bullish}")
+            
+            # Third day analysis
+            opens_in_gap = (df['Open'].iloc[i] > df['High'].iloc[i-2] and 
+                        df['Open'].iloc[i] < df['Low'].iloc[i-1])
+            closes_below = df['Close'].iloc[i] < df['Open'].iloc[i-1]
+            print(f"Third day (i):")
+            print(f"  O:{df['Open'].iloc[i]:.2f} H:{df['High'].iloc[i]:.2f} "
+                f"L:{df['Low'].iloc[i]:.2f} C:{df['Close'].iloc[i]:.2f}")
+            print(f"  Opens in gap: {opens_in_gap}")
+            print(f"  Closes below second open: {closes_below}")
+            
+            result.iloc[i] = (first_bullish and gap_up and second_bullish and 
+                            opens_in_gap and closes_below)
+            
+            if result.iloc[i]:
+                print("Valid three methods pattern found!")
+        
+        return result
+
+    @staticmethod
+    def detect_volatility_adjusted_patterns(df, window=20):
+        """Detect volatility adjusted patterns"""
+        patterns = pd.DataFrame(index=df.index)
+        
+        # Calculate volatility metrics
+        returns = df['Close'].pct_change()
+        volatility = returns.rolling(window=window, min_periods=1).std()
+        
+        print("\nVolatility Analysis:")
+        print(f"Rolling {window}-day volatility:")
+        for i in range(min(5, len(df))):
+            print(f"Day {i}: {volatility.iloc[i]:.4f}")
+        
+        for i in range(1, len(df)):
+            print(f"\nAnalyzing day {df.index[i]}:")
+            # Check for engulfing pattern
+            prev_bearish = df['Close'].iloc[i-1] < df['Open'].iloc[i-1]
+            curr_bullish = df['Close'].iloc[i] > df['Open'].iloc[i]
+            engulfs = (df['Open'].iloc[i] < df['Close'].iloc[i-1] and 
+                    df['Close'].iloc[i] > df['Open'].iloc[i-1])
+            
+            print(f"Previous candle: O:{df['Open'].iloc[i-1]:.2f} C:{df['Close'].iloc[i-1]:.2f}")
+            print(f"Current candle: O:{df['Open'].iloc[i]:.2f} C:{df['Close'].iloc[i]:.2f}")
+            print(f"Bearish->Bullish: {prev_bearish}->{curr_bullish}")
+            print(f"Engulfing: {engulfs}")
+            
+            # Volatility check
+            current_vol = volatility.iloc[i]
+            move_size = abs(df['Close'].iloc[i] - df['Open'].iloc[i])
+            vol_threshold = current_vol * df['Close'].iloc[i] * 1.5
+            
+            print(f"Move size: {move_size:.2f}")
+            print(f"Volatility threshold: {vol_threshold:.2f}")
+            
+            patterns.loc[df.index[i], 'volatile_bullish_engulfing'] = (
+                prev_bearish and curr_bullish and engulfs and
+                move_size > vol_threshold
+            )
+        
+        return patterns
     
     @staticmethod
     def detect_harmonic_patterns(df, tolerance=0.05):

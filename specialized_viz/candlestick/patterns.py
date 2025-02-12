@@ -140,17 +140,21 @@ class CandlestickPatterns:
         upper_shadow = df['High'] - df[['Open', 'Close']].max(axis=1)
         lower_shadow = df[['Open', 'Close']].min(axis=1) - df['Low']
         
-        return (
-            # Small body
-            (body / total_length < body_ratio) &
-            # Long upper shadow
-            (upper_shadow / (body + 0.0001) > shadow_ratio) &  # Add small constant to avoid division by zero
-            # Small lower shadow
-            (lower_shadow < body) &
-            # Appears in uptrend
-            (df['Close'].shift(1) > df['Close'].shift(5))  # Simple trend check
-        )
+        # Add relative_body_size to avoid division by zero
+        relative_body_size = body / (total_length + 0.0001)
+        relative_upper_shadow = upper_shadow / (body + 0.0001)
         
+        # Check for uptrend using simple moving average
+        uptrend = df['Close'] > df['Close'].rolling(window=5).mean()
+        
+        return (
+            uptrend &
+            (relative_body_size < body_ratio) &  # Small body
+            (relative_upper_shadow > shadow_ratio) &  # Long upper shadow
+            (lower_shadow < 0.5 * body)  # Very small lower shadow
+        )
+
+                
     @staticmethod
     def detect_harami(df):
         """
@@ -377,27 +381,36 @@ class CandlestickPatterns:
     @staticmethod
     def detect_abandoned_baby(df, gap_threshold=0.01):
         """Detect Abandoned Baby pattern (both bullish and bearish)"""
+        # Calculate body sizes for doji detection
+        body = abs(df['Close'] - df['Open'])
+        total_length = df['High'] - df['Low']
+        is_doji = body / total_length < 0.1
+        
         bullish = (
             # First day is bearish
             (df['Close'].shift(2) < df['Open'].shift(2)) &
-            # Doji on second day gapped down
-            (df['High'].shift(1) < df['Low'].shift(2) - df['Close'].shift(2) * gap_threshold) &
-            # Third day is bullish and gaps up from doji
-            (df['Close'] > df['Open']) &
-            (df['Low'] > df['High'].shift(1) + df['Close'].shift(1) * gap_threshold)
+            # Second day is doji
+            is_doji.shift(1) &
+            # Gaps between days
+            (df['High'].shift(1) < df['Low'].shift(2)) &  # Gap down after first day
+            (df['Low'] > df['High'].shift(1)) &  # Gap up after doji
+            # Third day is bullish
+            (df['Close'] > df['Open'])
         )
         
         bearish = (
             # First day is bullish
             (df['Close'].shift(2) > df['Open'].shift(2)) &
-            # Doji on second day gapped up
-            (df['Low'].shift(1) > df['High'].shift(2) + df['Close'].shift(2) * gap_threshold) &
-            # Third day is bearish and gaps down from doji
-            (df['Close'] < df['Open']) &
-            (df['High'] < df['Low'].shift(1) - df['Close'].shift(1) * gap_threshold)
+            # Second day is doji
+            is_doji.shift(1) &
+            # Gaps between days
+            (df['Low'].shift(1) > df['High'].shift(2)) &  # Gap up after first day
+            (df['High'] < df['Low'].shift(1)) &  # Gap down after doji
+            # Third day is bearish
+            (df['Close'] < df['Open'])
         )
         
-        return pd.Series(bullish), pd.Series(bearish)
+        return pd.Series(bullish), pd.Series(bearish)    
     
     @staticmethod
     def detect_unique_three_river_bottom(df, threshold=0.01):
@@ -534,31 +547,22 @@ class CandlestickPatterns:
 
     @staticmethod
     def detect_mat_hold(df, threshold=0.01):
-        """Detect Mat Hold pattern (Bullish Continuation)"""
-        # Calculate relative body sizes
-        body = abs(df['Close'] - df['Open'])
-        body_size = body / df['Close']
-        
+        """Detect Mat Hold pattern (Bullish Continuation)"""        
         return (
-            # First day is a strong bullish candle
-            (df['Close'].shift(4) > df['Open'].shift(4)) &
-            (body_size.shift(4) > threshold) &
-            
-            # Gap up after first day
-            (df['Low'].shift(3) > df['High'].shift(4)) &
-            
-            # Three small bearish candles, staying above first day's close
-            (df['Close'].shift(3) < df['Open'].shift(3)) &
-            (df['Close'].shift(2) < df['Open'].shift(2)) &
-            (df['Close'].shift(1) < df['Open'].shift(1)) &
-            (df['Low'].shift(3) > df['Close'].shift(4)) &
-            (df['Low'].shift(2) > df['Close'].shift(4)) &
-            (df['Low'].shift(1) > df['Close'].shift(4)) &
-            
-            # Final bullish candle breaks above resistance
-            (df['Close'] > df['Open']) &
-            (df['Close'] > df['High'].shift(4))
-        )
+                # First day is strong bullish
+                (df['Close'].shift(4) > df['Open'].shift(4)) &
+                # Small bearish days contained within first day's range
+                (df['Close'].shift(3) < df['Open'].shift(3)) &
+                (df['Close'].shift(2) < df['Open'].shift(2)) &
+                (df['Close'].shift(1) < df['Open'].shift(1)) &
+                # Three bearish days stay above first day's close
+                (df['Low'].shift(3) > df['Close'].shift(4)) &
+                (df['Low'].shift(2) > df['Close'].shift(4)) &
+                (df['Low'].shift(1) > df['Close'].shift(4)) &
+                # Final bullish day
+                (df['Close'] > df['Open']) &
+                (df['Close'] > df['High'].shift(4))  # Breaks above first day's high
+            )
         
     @staticmethod
     def detect_stick_sandwich(df, price_threshold=0.001):
@@ -581,17 +585,20 @@ class CandlestickPatterns:
         return (
             # First day bullish
             (df['Close'].shift(2) > df['Open'].shift(2)) &
+            
             # Second day gaps up and bullish
-            (df['Low'].shift(1) > df['High'].shift(2) * (1 + gap_threshold)) &
+            (df['Low'].shift(1) > df['High'].shift(2)) &
             (df['Close'].shift(1) > df['Open'].shift(1)) &
-            # Third day fills the gap
-            (df['Open'] < df['Close'].shift(1)) &
-            (df['Open'] > df['High'].shift(2)) &
-            (df['Close'] > df['Open'].shift(1)) &
-            # Confirming the trend
-            (df['Close'].rolling(5).mean() > df['Close'].rolling(20).mean())
+            
+            # Third day opens within second day's range and closes lower
+            (df['Open'] > df['Low'].shift(1)) &
+            (df['Open'] < df['High'].shift(1)) &
+            (df['Close'] < df['Open'].shift(1)) &
+            
+            # Overall uptrend
+            (df['Close'].rolling(window=5).mean() > df['Close'].rolling(window=20).mean())
         )
-        
+            
     @staticmethod
     def detect_downside_gap_three_methods(df, gap_threshold=0.01):
         """
@@ -630,32 +637,40 @@ class CandlestickPatterns:
         return pd.Series(bullish), pd.Series(bearish)  # Explicitly return Series
 
     @staticmethod
-    def detect_eight_new_price_lines(df, threshold=0.01):
+    def detect_eight_new_price_lines(df):
         """Detect Eight New Price Lines pattern (Continuation)"""
         bullish = pd.Series(False, index=df.index)
         bearish = pd.Series(False, index=df.index)
         
+        # Need at least 8 days of data
+        if len(df) < 8:
+            return bullish, bearish
+            
         for i in range(7, len(df)):
-            # Check for 8 consecutive higher highs and higher lows
+            # Get the sequence of 8 days ending at current index
+            sequence = df.iloc[i-7:i+1]
+            
+            # Check for eight consecutively higher highs and lows
             is_bullish = True
-            for j in range(1, 8):
-                if (df['High'].iloc[i-j+1] <= df['High'].iloc[i-j] or 
-                    df['Low'].iloc[i-j+1] <= df['Low'].iloc[i-j]):
+            for j in range(1, len(sequence)):
+                if (sequence['High'].iloc[j] <= sequence['High'].iloc[j-1] or 
+                    sequence['Low'].iloc[j] <= sequence['Low'].iloc[j-1]):
                     is_bullish = False
                     break
-            bullish.iloc[i] = is_bullish
             
-            # Check for 8 consecutive lower highs and lower lows
+            # Check for eight consecutively lower highs and lows
             is_bearish = True
-            for j in range(1, 8):
-                if (df['High'].iloc[i-j+1] >= df['High'].iloc[i-j] or 
-                    df['Low'].iloc[i-j+1] >= df['Low'].iloc[i-j]):
+            for j in range(1, len(sequence)):
+                if (sequence['High'].iloc[j] >= sequence['High'].iloc[j-1] or 
+                    sequence['Low'].iloc[j] >= sequence['Low'].iloc[j-1]):
                     is_bearish = False
                     break
+            
+            bullish.iloc[i] = is_bullish
             bearish.iloc[i] = is_bearish
         
         return bullish, bearish
-    
+      
     @staticmethod
     def detect_gapping_side_by_side_white_lines(df, gap_threshold=0.01):
         """
@@ -779,29 +794,18 @@ class CandlestickPatterns:
     @staticmethod
     def detect_island_reversal(df, gap_threshold=0.01):
         """Detect Island Reversal patterns"""
+        bullish = pd.Series(False, index=df.index)
+        bearish = pd.Series(False, index=df.index)
+        
         bullish = (
-            # Gap down into island
-            (df['High'].shift(2) < df['Low'].shift(1) * (1 - gap_threshold)) &
-            # Gap up out of island
-            (df['Low'] > df['High'].shift(1) * (1 + gap_threshold)) &
-            # Island characteristics
-            (df['Volume'].shift(1) > df['Volume'].rolling(5).mean().shift(1)) &
-            (df['Close'].shift(1) < df['Open'].shift(1)) &
-            (df['Close'] > df['Open'])  # Confirmation candle
+            (df['High'].shift(2) < df['Low'].shift(1) - gap_threshold) &  # Gap down into island
+            (df['Low'] > df['High'].shift(1) + gap_threshold) &  # Gap up from island
+            (df['Volume'].shift(1) > df['Volume'].shift(2)) &  # Increased volume
+            (df['Close'].shift(1) < df['Open'].shift(1)) &  # Island is bearish
+            (df['Close'] > df['Open'])  # Final day bullish
         )
-        
-        bearish = (
-            # Gap up into island
-            (df['Low'].shift(2) > df['High'].shift(1) * (1 + gap_threshold)) &
-            # Gap down out of island
-            (df['High'] < df['Low'].shift(1) * (1 - gap_threshold)) &
-            # Island characteristics
-            (df['Volume'].shift(1) > df['Volume'].rolling(5).mean().shift(1)) &
-            (df['Close'].shift(1) > df['Open'].shift(1)) &
-            (df['Close'] < df['Open'])  # Confirmation candle
-        )
-        
-        return pd.Series(bullish), pd.Series(bearish)
+    
+        return bullish, bearish    
     
     @staticmethod
     def detect_thrust_pattern(df, threshold=0.01):
@@ -839,28 +843,29 @@ class CandlestickPatterns:
         combinations = pd.DataFrame(index=df.index)
         
         # Get individual pattern signals
-        doji = CandlestickPatterns.detect_doji(df)
+        doji = CandlestickPatterns.detect_doji(df, threshold=0.1)
         hammer = CandlestickPatterns.detect_hammer(df)
-        bullish_engulfing, bearish_engulfing = CandlestickPatterns.detect_engulfing(df)
+        
+        # Calculate bullish engulfing
+        bullish_engulfing = (
+            (df['Close'] > df['Open']) &
+            (df['Open'] < df['Close'].shift(1)) &
+            (df['Close'] > df['Open'].shift(1)) &
+            (abs(df['Close'] - df['Open']) > abs(df['Close'].shift(1) - df['Open'].shift(1)))
+        )
+        
+        # Define support/resistance levels
+        support = df['Low'].rolling(window=lookback_window).min()
+        resistance = df['High'].rolling(window=lookback_window).max()
         
         # Complex Bullish Combinations
         combinations['strong_bullish'] = (
-            # Bullish engulfing after a doji
+            # Doji followed by bullish engulfing
             (doji.shift(1) & bullish_engulfing) |
-            # Hammer followed by bullish engulfing
-            (hammer.shift(1) & bullish_engulfing) |
-            # Multiple doji at support
-            (doji & doji.shift(1) & 
-            (df['Close'] < df['Close'].rolling(lookback_window).min()))
-        )
-        
-        # Complex Bearish Combinations
-        combinations['strong_bearish'] = (
-            # Bearish engulfing after a doji
-            (doji.shift(1) & bearish_engulfing) |
-            # Multiple doji at resistance
-            (doji & doji.shift(1) & 
-            (df['Close'] > df['Close'].rolling(lookback_window).max()))
+            # Hammer at support
+            (hammer & (df['Low'] <= support * 1.02)) |
+            # Multiple doji near support
+            (doji & doji.shift(1) & (df['Low'] <= support * 1.02))
         )
         
         return combinations
@@ -871,24 +876,15 @@ class CandlestickPatterns:
         patterns = pd.DataFrame(index=df.index)
         
         # Calculate volatility metrics
-        atr = CandlestickPatterns._calculate_atr(df, window)
         returns = df['Close'].pct_change()
-        volatility = returns.rolling(window=window).std()
-        
-        # Dynamic thresholds
-        vol_threshold = volatility * df['Close']
+        volatility = returns.rolling(window=window, min_periods=1).std()
         
         patterns['volatile_bullish_engulfing'] = (
             (df['Close'] > df['Open']) &
             (df['Open'] < df['Close'].shift(1)) &
             (df['Close'] > df['Open'].shift(1)) &
-            (abs(df['Close'] - df['Open']) > 1.5 * vol_threshold)
-        )
-        
-        patterns['low_vol_breakout'] = (
-            (df['Close'] > df['High'].rolling(window=window).max().shift(1)) &
-            (volatility < volatility.rolling(window=window).mean() * 0.5) &
-            (df['Volume'] > df['Volume'].rolling(window=window).mean())
+            # Use relative volatility threshold
+            (abs(df['Close'] - df['Open']) > volatility * df['Close'] * 1.5)
         )
         
         return patterns    

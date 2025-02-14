@@ -511,6 +511,7 @@ class TestCandlestickPatterns(unittest.TestCase):
         print(f"Available dates in result: {bullish.index}")
         
         self.assertTrue(bullish[lines_data.index[-1]])
+        self.assertFalse(bearish[lines_data.index[-1]])  # Add this line to check bearish Series
             
     def test_detect_three_stars_south(self):
         """Test three stars in the south pattern detection"""

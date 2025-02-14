@@ -1123,3 +1123,48 @@ class CandlestickPatterns:
             )
         
         return patterns
+    
+    @staticmethod
+    def _validate_data(df):
+        """
+        Validate and standardize input dataframe.
+        Ensures required columns exist and handles different date formats.
+        
+        Args:
+            df (pd.DataFrame): Input dataframe with OHLCV data
+            
+        Returns:
+            pd.DataFrame: Standardized dataframe
+            
+        Raises:
+            ValueError: If required columns are missing
+        """
+        required_columns = ['Open', 'High', 'Low', 'Close']
+        # Check for lowercase variants
+        for col in required_columns:
+            if col not in df.columns and col.lower() in df.columns:
+                df[col] = df[col.lower()]
+        
+        # Verify required columns
+        missing_cols = [col for col in required_columns if col not in df.columns]
+        if missing_cols:
+            raise ValueError(f"Missing required columns: {missing_cols}")
+        
+        # Ensure index is datetime
+        if not isinstance(df.index, pd.DatetimeIndex):
+            print("Warning: Converting index to datetime format")
+            try:
+                df.index = pd.to_datetime(df.index)
+            except Exception as e:
+                raise ValueError(f"Could not convert index to datetime: {str(e)}")
+        
+        # Ensure all price columns are float
+        for col in required_columns:
+            df[col] = df[col].astype(float)
+        
+        # Add Volume if missing
+        if 'Volume' not in df.columns:
+            print("Warning: Volume data not found, using placeholder values")
+            df['Volume'] = 1000000
+        
+        return df

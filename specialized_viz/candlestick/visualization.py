@@ -44,12 +44,41 @@ class CandlestickVisualizer:
         Args:
             df (pd.DataFrame): DataFrame with OHLCV data
             config (VisualizationConfig, optional): Visualization configuration
+            
+        Raises:
+            ValueError: If required columns are missing or data types are invalid
         """
-        self.df = df
-        self.patterns = CandlestickPatterns()
+        required_columns = ['Open', 'High', 'Low', 'Close']
+        optional_columns = ['Volume']
+        
+        # Validate required columns
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        if missing_columns:
+            raise ValueError(f"Missing required columns: {missing_columns}")
+        
+        # Validate data types and values
+        for col in required_columns:
+            if not pd.api.types.is_numeric_dtype(df[col]):
+                raise ValueError(f"Column {col} must contain numeric data")
+                
+        # Validate price relationships
+        invalid_prices = (
+            (df['High'] < df['Low']) |
+            (df['High'] < df['Open']) |
+            (df['High'] < df['Close']) |
+            (df['Low'] > df['Open']) |
+            (df['Low'] > df['Close'])
+        )
+        if invalid_prices.any():
+            invalid_dates = df.index[invalid_prices].tolist()
+            raise ValueError(f"Invalid price relationships found at dates: {invalid_dates}")
+        
+        # Create a copy of the dataframe to prevent modifications
+        self.df = df.copy()
         self.config = config or VisualizationConfig()
         self._cached_pattern_results = {}
-     
+        self._pattern_lock = threading.Lock()  # Add thread safety     
+        
     def create_candlestick_chart(self, use_plotly: bool = False, **kwargs) -> Union[go.Figure, None]:
         """
         Create a candlestick chart using either Plotly or Matplotlib
@@ -101,6 +130,28 @@ class CandlestickVisualizer:
         )
         
         return fig
+    
+    def _ensure_datetime_index(self) -> pd.DataFrame:
+        """
+        Ensure DataFrame has a datetime index without modifying original data
+        
+        Returns:
+            pd.DataFrame: DataFrame with datetime index
+        """
+        df_copy = self.df.copy()
+        
+        if not isinstance(df_copy.index, pd.DatetimeIndex):
+            try:
+                # Try basic conversion first
+                df_copy.index = pd.to_datetime(df_copy.index)
+            except (ValueError, TypeError):
+                try:
+                    # Try with UTC for timestamps
+                    df_copy.index = pd.to_datetime(df_copy.index, utc=True)
+                except Exception as e:
+                    raise ValueError(f"Unable to convert index to datetime: {str(e)}")
+        
+        return df_copy
 
     def _create_matplotlib_chart(self, 
                             bollinger_upper: pd.Series = None,
@@ -110,7 +161,8 @@ class CandlestickVisualizer:
                             title: str = 'OHLC Candles with Indicators',
                             figsize: tuple = (14, 7)):
         """Create static Matplotlib candlestick chart"""
-        fig, ax = plt.subplots(figsize=figsize)
+        df = self._ensure_datetime_index()
+        fig, ax = plt.subplots(figsize=kwargs.get('figsize', (14, 7)))
 
         # Ensure datetime index
         try:
@@ -236,6 +288,35 @@ class CandlestickVisualizer:
         
         return pattern_density
 
+    def _get_pattern_results(self, pattern_name: str) -> Optional[Union[pd.Series, Tuple[pd.Series, pd.Series]]]:
+        """
+        Get cached pattern results in a thread-safe manner
+        
+        Args:
+            pattern_name (str): Name of the pattern to retrieve
+            
+        Returns:
+            Optional[Union[pd.Series, Tuple[pd.Series, pd.Series]]]: Cached pattern results
+        """
+        with self._pattern_lock:
+            return self._cached_pattern_results.get(pattern_name)
+
+    def _set_pattern_results(self, pattern_name: str, results: Union[pd.Series, Tuple[pd.Series, pd.Series]]) -> None:
+        """
+        Cache pattern results in a thread-safe manner
+        
+        Args:
+            pattern_name (str): Name of the pattern to cache
+            results: Pattern detection results
+        """
+        with self._pattern_lock:
+            self._cached_pattern_results[pattern_name] = results
+            
+    def _clear_pattern_cache(self) -> None:
+        """Clear the pattern cache"""
+        with self._pattern_lock:
+            self._cached_pattern_results.clear()
+        
     def create_pattern_cluster_chart(self) -> go.Figure:
         """
         Create a visualization of pattern clusters
@@ -1107,13 +1188,31 @@ class CandlestickVisualizer:
         return significance
 
     def _calculate_rsi(self, prices: pd.Series, period: int = 14) -> pd.Series:
-        """Calculate Relative Strength Index"""
+        """
+        Calculate Relative Strength Index safely
+        
+        Args:
+            prices (pd.Series): Price data
+            period (int): RSI period
+            
+        Returns:
+            pd.Series: RSI values
+        """
         delta = prices.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-        rs = gain / loss
-        return 100 - (100 / (1 + rs))
-
+        
+        gain = delta.where(delta > 0, 0)
+        loss = -delta.where(delta < 0, 0)
+        
+        avg_gain = gain.rolling(window=period).mean()
+        avg_loss = loss.rolling(window=period).mean()
+        
+        rs = pd.Series(0, index=prices.index)  # Initialize with zeros
+        valid_denominator = avg_loss != 0
+        rs[valid_denominator] = avg_gain[valid_denominator] / avg_loss[valid_denominator]
+        
+        rsi = 100 - (100 / (1 + rs))
+        return rsi
+    
     def _calculate_macd(self, prices: pd.Series) -> pd.Series:
         """Calculate MACD"""
         exp1 = prices.ewm(span=12, adjust=False).mean()

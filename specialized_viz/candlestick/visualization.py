@@ -1770,6 +1770,392 @@ class CandlestickVisualizer:
             return (abs(current_price - targets['first']) <= 
                     abs(current_price - stops['initial']))
 
+    def predict_pattern_breakout(self,
+                            lookback_period: int = 100,
+                            confidence_threshold: float = 0.7) -> pd.DataFrame:
+        """
+        Predict potential pattern breakouts/breakdowns based on historical behavior
+        
+        Args:
+            lookback_period (int): Historical period to analyze
+            confidence_threshold (float): Minimum confidence for predictions
+            
+        Returns:
+            pd.DataFrame: Breakout predictions with confidence levels
+        """
+        predictions = []
+        pattern_methods = self._get_safe_pattern_methods()
+        
+        # Get current market context
+        current_context = self._get_market_context()
+        
+        for pattern_name, pattern_func in pattern_methods.items():
+            try:
+                signals = self._get_pattern_signals(pattern_name)
+                if signals is None:
+                    continue
+                
+                # Handle current active patterns
+                active_patterns = self._get_active_patterns(signals, pattern_name)
+                
+                for pattern in active_patterns:
+                    # Calculate breakout probability
+                    breakout_prob = self._calculate_breakout_probability(
+                        pattern,
+                        lookback_period,
+                        current_context
+                    )
+                    
+                    if breakout_prob['confidence'] >= confidence_threshold:
+                        predictions.append({
+                            'pattern_name': pattern_name,
+                            'direction': pattern['direction'],
+                            'start_date': pattern['start_date'],
+                            'confidence': breakout_prob['confidence'],
+                            'expected_movement': breakout_prob['expected_movement'],
+                            'target_price': breakout_prob['target_price'],
+                            'stop_price': breakout_prob['stop_price'],
+                            'timeframe': breakout_prob['timeframe']
+                        })
+                        
+            except Exception as e:
+                print(f"Error analyzing breakout for {pattern_name}: {str(e)}")
+                continue
+        
+        return pd.DataFrame(predictions)
+
+    def _get_market_context(self) -> Dict[str, Any]:
+        """
+        Get current market context for breakout analysis
+        
+        Returns:
+            Dict[str, Any]: Market context metrics
+        """
+        latest_data = self.df.iloc[-20:]  # Last 20 bars
+        
+        return {
+            'volatility': latest_data['Close'].pct_change().std() * np.sqrt(252),
+            'trend': self._calculate_market_trend(),
+            'volume_profile': self._analyze_volume_profile(latest_data),
+            'support_resistance': self._identify_key_levels(latest_data),
+            'momentum': self._calculate_momentum_indicators(latest_data)
+        }
+
+    def _get_active_patterns(self,
+                            signals: Union[pd.Series, Tuple[pd.Series, pd.Series]],
+                            pattern_name: str) -> List[Dict[str, Any]]:
+        """
+        Identify currently active patterns
+        
+        Args:
+            signals: Pattern signals
+            pattern_name (str): Name of the pattern
+            
+        Returns:
+            List[Dict[str, Any]]: Active pattern information
+        """
+        active_patterns = []
+        
+        if isinstance(signals, tuple):
+            bullish, bearish = signals
+            # Check last 5 bars for active patterns
+            for i in range(-5, 0):
+                if bullish.iloc[i]:
+                    active_patterns.append({
+                        'direction': 'bullish',
+                        'start_date': bullish.index[i],
+                        'pattern': pattern_name
+                    })
+                if bearish.iloc[i]:
+                    active_patterns.append({
+                        'direction': 'bearish',
+                        'start_date': bearish.index[i],
+                        'pattern': pattern_name
+                    })
+        else:
+            for i in range(-5, 0):
+                if signals.iloc[i]:
+                    active_patterns.append({
+                        'direction': 'neutral',
+                        'start_date': signals.index[i],
+                        'pattern': pattern_name
+                    })
+        
+        return active_patterns
+
+        def _calculate_breakout_probability(self,
+                                        pattern: Dict[str, Any],
+                                        lookback_period: int,
+                                        current_context: Dict[str, Any]) -> Dict[str, Any]:
+            """
+            Calculate probability of pattern breakout
+            
+            Args:
+                pattern (Dict[str, Any]): Pattern information
+                lookback_period (int): Historical period to analyze
+                current_context (Dict[str, Any]): Current market context
+                
+            Returns:
+                Dict[str, Any]: Breakout probability and targets
+            """
+            # Find similar historical patterns
+            historical_patterns = self._find_similar_historical_patterns(
+                pattern,
+                lookback_period,
+                current_context
+            )
+            
+            if not historical_patterns:
+                return {
+                    'confidence': 0.0,
+                    'expected_movement': 0.0,
+                    'target_price': None,
+                    'stop_price': None,
+                    'timeframe': None
+                }
+            
+            # Analyze historical outcomes
+            successful_breakouts = 0
+            movement_sizes = []
+            breakout_times = []
+            
+            for hist_pattern in historical_patterns:
+                outcome = self._analyze_pattern_outcome(hist_pattern)
+                if outcome['success']:
+                    successful_breakouts += 1
+                    movement_sizes.append(outcome['movement_size'])
+                    breakout_times.append(outcome['breakout_time'])
+            
+            if not movement_sizes:
+                return {
+                    'confidence': 0.0,
+                    'expected_movement': 0.0,
+                    'target_price': None,
+                    'stop_price': None,
+                    'timeframe': None
+                }
+            
+            # Calculate probabilities and targets
+            confidence = successful_breakouts / len(historical_patterns)
+            avg_movement = np.mean(movement_sizes)
+            avg_timeframe = int(np.mean(breakout_times))
+            
+            current_price = self.df['Close'].iloc[-1]
+            if pattern['direction'] == 'bullish':
+                target_price = current_price * (1 + avg_movement)
+                stop_price = current_price * (1 - avg_movement * 0.5)
+            else:
+                target_price = current_price * (1 - avg_movement)
+                stop_price = current_price * (1 + avg_movement * 0.5)
+            
+            return {
+                'confidence': confidence,
+                'expected_movement': avg_movement,
+                'target_price': target_price,
+                'stop_price': stop_price,
+                'timeframe': avg_timeframe
+            }
+            
+    def _find_similar_historical_patterns(self,
+                                        current_pattern: Dict[str, Any],
+                                        lookback_period: int,
+                                        current_context: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Find historical patterns with similar characteristics
+        
+        Args:
+            current_pattern (Dict[str, Any]): Current pattern information
+            lookback_period (int): Historical period to analyze
+            current_context (Dict[str, Any]): Current market context
+            
+        Returns:
+            List[Dict[str, Any]]: Similar historical patterns
+        """
+        similar_patterns = []
+        pattern_start_idx = self.df.index.get_loc(current_pattern['start_date'])
+        
+        # Look back from current pattern
+        start_idx = max(0, pattern_start_idx - lookback_period)
+        historical_slice = slice(start_idx, pattern_start_idx)
+        
+        # Get historical signals
+        signals = self._get_pattern_signals(current_pattern['pattern'])
+        if signals is None:
+            return []
+        
+        if isinstance(signals, tuple):
+            signal = (signals[0] if current_pattern['direction'] == 'bullish' 
+                    else signals[1])
+        else:
+            signal = signals
+            
+        # Find historical occurrences
+        historical_dates = signal.iloc[historical_slice][signal.iloc[historical_slice] > 0].index
+        
+        for date in historical_dates:
+            try:
+                # Get historical context
+                hist_context = self._get_historical_context(date)
+                
+                # Check context similarity
+                if self._is_context_similar(current_context, hist_context):
+                    pattern_data = {
+                        'date': date,
+                        'direction': current_pattern['direction'],
+                        'pattern': current_pattern['pattern'],
+                        'context': hist_context
+                    }
+                    similar_patterns.append(pattern_data)
+                    
+            except Exception as e:
+                print(f"Error analyzing historical pattern at {date}: {str(e)}")
+                continue
+        
+        return similar_patterns
+
+    def _get_historical_context(self, date: pd.Timestamp) -> Dict[str, Any]:
+        """
+        Get market context for a historical date
+        
+        Args:
+            date (pd.Timestamp): Historical date
+            
+        Returns:
+            Dict[str, Any]: Historical market context
+        """
+        idx = self.df.index.get_loc(date)
+        historical_data = self.df.iloc[max(0, idx-20):idx+1]
+        
+        return {
+            'volatility': historical_data['Close'].pct_change().std() * np.sqrt(252),
+            'trend': self._calculate_historical_trend(historical_data),
+            'volume_profile': self._analyze_volume_profile(historical_data),
+            'support_resistance': self._identify_key_levels(historical_data),
+            'momentum': self._calculate_momentum_indicators(historical_data)
+        }
+
+    def _is_context_similar(self,
+                        current_context: Dict[str, Any],
+                        historical_context: Dict[str, Any],
+                        threshold: float = 0.7) -> bool:
+        """
+        Compare current and historical market contexts
+        
+        Args:
+            current_context (Dict[str, Any]): Current market context
+            historical_context (Dict[str, Any]): Historical market context
+            threshold (float): Similarity threshold
+            
+        Returns:
+            bool: True if contexts are similar
+        """
+        similarity_scores = {
+            'volatility': self._compare_volatility(
+                current_context['volatility'],
+                historical_context['volatility']
+            ),
+            'trend': self._compare_trend(
+                current_context['trend'],
+                historical_context['trend']
+            ),
+            'volume': self._compare_volume_profile(
+                current_context['volume_profile'],
+                historical_context['volume_profile']
+            ),
+            'momentum': self._compare_momentum(
+                current_context['momentum'],
+                historical_context['momentum']
+            )
+        }
+        
+        avg_similarity = np.mean(list(similarity_scores.values()))
+        return avg_similarity >= threshold
+
+    def _analyze_pattern_outcome(self,
+                            pattern: Dict[str, Any],
+                            max_bars: int = 20) -> Dict[str, Any]:
+        """
+        Analyze the outcome of a historical pattern
+        
+        Args:
+            pattern (Dict[str, Any]): Pattern information
+            max_bars (int): Maximum bars to analyze
+            
+        Returns:
+            Dict[str, Any]: Pattern outcome analysis
+        """
+        try:
+            pattern_idx = self.df.index.get_loc(pattern['date'])
+            if pattern_idx + max_bars >= len(self.df):
+                max_bars = len(self.df) - pattern_idx - 1
+                
+            if max_bars <= 0:
+                return {
+                    'success': False,
+                    'movement_size': 0.0,
+                    'breakout_time': 0
+                }
+                
+            # Get post-pattern data
+            post_pattern_data = self.df.iloc[pattern_idx:pattern_idx + max_bars + 1]
+            initial_price = post_pattern_data['Close'].iloc[0]
+            
+            # Get targets and stops
+            targets, stops = self._calculate_pattern_targets(
+                post_pattern_data.iloc[0],
+                pattern['direction']
+            )
+            
+            # Track price movement
+            for i, (_, prices) in enumerate(post_pattern_data.iterrows()):
+                if i == 0:  # Skip pattern bar
+                    continue
+                    
+                current_price = prices['Close']
+                price_change = (current_price - initial_price) / initial_price
+                
+                # Check if pattern reached target
+                if pattern['direction'] == 'bullish':
+                    if current_price >= targets['first']:
+                        return {
+                            'success': True,
+                            'movement_size': price_change,
+                            'breakout_time': i
+                        }
+                    elif current_price <= stops['initial']:
+                        return {
+                            'success': False,
+                            'movement_size': price_change,
+                            'breakout_time': i
+                        }
+                else:  # bearish or neutral
+                    if current_price <= targets['first']:
+                        return {
+                            'success': True,
+                            'movement_size': abs(price_change),
+                            'breakout_time': i
+                        }
+                    elif current_price >= stops['initial']:
+                        return {
+                            'success': False,
+                            'movement_size': abs(price_change),
+                            'breakout_time': i
+                        }
+            
+            # If no clear outcome
+            return {
+                'success': False,
+                'movement_size': 0.0,
+                'breakout_time': max_bars
+            }
+            
+        except Exception as e:
+            print(f"Error analyzing pattern outcome: {str(e)}")
+            return {
+                'success': False,
+                'movement_size': 0.0,
+                'breakout_time': 0
+            }
 
     def _calculate_pattern_metrics(self,
                                 signal: pd.Series,

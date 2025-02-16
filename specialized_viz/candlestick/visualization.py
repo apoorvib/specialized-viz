@@ -153,140 +153,249 @@ class CandlestickVisualizer:
         
         return df_copy
 
-    def _create_matplotlib_chart(self, 
-                            bollinger_upper: pd.Series = None,
-                            bollinger_mid: pd.Series = None,
-                            bollinger_lower: pd.Series = None,
-                            pivot_points: list = None,
+    def _create_matplotlib_chart(self,
+                            bollinger_bands: Optional[Dict[str, pd.Series]] = None,
+                            pivot_points: Optional[List[float]] = None,
                             title: str = 'OHLC Candles with Indicators',
-                            figsize: tuple = (14, 7)):
-        """Create static Matplotlib candlestick chart"""
-        df = self._ensure_datetime_index()
-        fig, ax = plt.subplots(figsize=kwargs.get('figsize', (14, 7)))
-
-        # Ensure datetime index
+                            figsize: Tuple[int, int] = (14, 7)) -> Figure:
+        """
+        Create a static Matplotlib candlestick chart with optional indicators
+        
+        Args:
+            bollinger_bands (Optional[Dict[str, pd.Series]]): Dictionary containing 
+                'upper', 'middle', and 'lower' Bollinger Band Series
+            pivot_points (Optional[List[float]]): List of pivot point price levels
+            title (str): Chart title
+            figsize (Tuple[int, int]): Figure dimensions (width, height)
+        
+        Returns:
+            matplotlib.figure.Figure: The created figure
+            
+        Raises:
+            ValueError: If date conversion fails or if invalid data is provided
+        """
+        # Create figure and axis
+        fig, ax = plt.subplots(figsize=figsize)
+        
         try:
-            if not np.issubdtype(self.df.index.dtype, np.datetime64):
-                self.df.index = pd.to_datetime(self.df.index)
+            # Get datetime index without modifying original data
+            df = self._ensure_datetime_index()
+            
+            # Convert to matplotlib dates for plotting
+            dates_mdates = mdates.date2num(df.index.to_pydatetime())
+            
+            # Calculate candle width based on data frequency
+            if len(df) > 1:
+                avg_time_delta = (dates_mdates[-1] - dates_mdates[0]) / len(dates_mdates)
+                candle_width = 0.6 * avg_time_delta
+            else:
+                candle_width = 0.6
+            
+            # Plot candlesticks
+            for idx, (date, row) in enumerate(df.iterrows()):
+                # Determine candle color
+                color = self.config.color_scheme['bullish'] if row['Close'] >= row['Open'] else self.config.color_scheme['bearish']
+                
+                # Plot price range (high-low line)
+                ax.vlines(dates_mdates[idx], row['Low'], row['High'], 
+                        color=color, linewidth=1)
+                
+                # Plot candle body
+                body_bottom = min(row['Open'], row['Close'])
+                body_height = abs(row['Close'] - row['Open'])
+                rect = Rectangle((dates_mdates[idx] - candle_width/2, body_bottom),
+                            candle_width, body_height,
+                            facecolor=color, edgecolor=color, alpha=0.8)
+                ax.add_patch(rect)
+            
+            # Add Bollinger Bands if provided
+            if bollinger_bands is not None:
+                for band_name, band_data in bollinger_bands.items():
+                    if band_name == 'upper':
+                        ax.plot(dates_mdates, band_data.values, 
+                            color='purple', linestyle='--', 
+                            label='Upper BB', alpha=0.7)
+                    elif band_name == 'middle':
+                        ax.plot(dates_mdates, band_data.values, 
+                            color='blue', linestyle='--', 
+                            label='Middle BB', alpha=0.7)
+                    elif band_name == 'lower':
+                        ax.plot(dates_mdates, band_data.values, 
+                            color='purple', linestyle='--', 
+                            label='Lower BB', alpha=0.7)
+                
+                # Add band fill
+                if all(k in bollinger_bands for k in ['upper', 'lower']):
+                    ax.fill_between(dates_mdates, 
+                                bollinger_bands['lower'].values,
+                                bollinger_bands['upper'].values,
+                                color='purple', alpha=0.1)
+            
+            # Add pivot points if provided
+            if pivot_points:
+                for level in pivot_points:
+                    ax.axhline(y=level, color='blue', 
+                            linestyle='--', linewidth=0.8, 
+                            alpha=0.7, label=f'Pivot: {level:.2f}')
+            
+            # Format x-axis
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+            ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+            plt.xticks(rotation=45, ha='right')
+            
+            # Format y-axis
+            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x:,.2f}'))
+            
+            # Add grid
+            ax.grid(True, linestyle='--', alpha=0.3)
+            
+            # Set labels and title
+            ax.set_title(title, pad=20)
+            ax.set_xlabel('Date', labelpad=10)
+            ax.set_ylabel('Price', labelpad=10)
+            
+            # Add legend if we have any indicators
+            if bollinger_bands is not None or pivot_points:
+                ax.legend(loc='upper left', bbox_to_anchor=(1.05, 1),
+                        borderaxespad=0., frameon=True)
+            
+            # Adjust layout to prevent label cutoff
+            plt.tight_layout()
+            
+            return fig
+            
         except Exception as e:
-            self.df.index = pd.to_datetime(self.df.index, utc=True)
-
-        # Convert datetime to matplotlib format
-        mdates_index = mdates.date2num(self.df.index.to_pydatetime())
-        
-        # Calculate candle width
-        if len(self.df) > 1:
-            candle_width = 0.6 * (mdates_index[1] - mdates_index[0])
-        else:
-            candle_width = 0.5
-
-        # Plot candles
-        for i, (idx, row) in enumerate(self.df.iterrows()):
-            color = 'green' if row['Close'] >= row['Open'] else 'red'
-            ax.vlines(mdates_index[i], row['Low'], row['High'], color=color, linewidth=1)
-            lower = row['Open'] if row['Open'] < row['Close'] else row['Close']
-            height = abs(row['Close'] - row['Open'])
-            rect = Rectangle((mdates_index[i] - candle_width/2, lower), 
-                            candle_width, height, 
-                            color=color, alpha=0.8)
-            ax.add_patch(rect)
-
-        # Add Bollinger Bands if provided
-        if all(band is not None for band in [bollinger_upper, bollinger_lower]):
-            x_vals = mdates.date2num(bollinger_upper.index.to_pydatetime())
-            ax.plot(x_vals, bollinger_upper.values, 'purple', linestyle='--', label='Upper BB')
-            ax.plot(x_vals, bollinger_lower.values, 'purple', linestyle='--', label='Lower BB')
-            if bollinger_mid is not None:
-                ax.plot(x_vals, bollinger_mid.values, 'orange', linestyle='--', label='Middle BB')
-            ax.fill_between(x_vals, bollinger_lower.values, bollinger_upper.values, 
-                        color='purple', alpha=0.1)
-
-        # Add pivot points if provided
-        if pivot_points:
-            for level in pivot_points:
-                ax.axhline(y=level, color='blue', linestyle='--', linewidth=0.8, alpha=0.7)
-
-        # Format plot
-        ax.xaxis_date()
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-        plt.xticks(rotation=45)
-        ax.set_title(title)
-        ax.set_xlabel('Date')
-        ax.set_ylabel('Price')
-        ax.grid(True, linestyle='--', alpha=0.3)
-        ax.legend()
-        plt.tight_layout()
-        
-        return fig
-        
+            plt.close(fig)  # Clean up in case of error
+            raise ValueError(f"Error creating matplotlib chart: {str(e)}")
+            
+        finally:
+            # The caller is responsible for closing the figure after use
+            pass
+            
     def _cluster_patterns(self, window_size: int = 20) -> pd.DataFrame:
         """
         Cluster pattern occurrences to identify high-density regions
         
         Args:
             window_size (int): Rolling window size for pattern density
-                
+            
         Returns:
-            pd.DataFrame: Clustered pattern data
+            pd.DataFrame: Clustered pattern data with density metrics
+            
+        Raises:
+            ValueError: If pattern detection fails or clustering cannot be performed
         """
         pattern_methods = self._get_all_pattern_methods()
         pattern_density = pd.DataFrame(index=self.df.index)
         
-        # Patterns to exclude (require special handling or additional arguments)
-        patterns_to_exclude = {
+        excluded_patterns = {
             'breakout_patterns', 'harmonic_patterns', 'multi_timeframe_patterns',
             'pattern_combinations', 'pattern_reliability', 'volatility_adjusted_patterns'
         }
         
-        # Calculate pattern density
         for pattern_name, pattern_func in pattern_methods.items():
-            if pattern_name in patterns_to_exclude:
+            if pattern_name in excluded_patterns:
                 continue
                 
             try:
-                result = pattern_func(self.df)
+                # Get pattern results from cache or calculate new
+                cached_result = self._get_pattern_results(pattern_name)
+                if cached_result is not None:
+                    result = cached_result
+                else:
+                    result = pattern_func(self.df)
+                    self._set_pattern_results(pattern_name, result)
+                
                 if isinstance(result, tuple):
-                    # Handle patterns that return bullish/bearish signals
-                    bullish, bearish = result
-                    if isinstance(bullish, pd.DataFrame):
-                        bullish = bullish.iloc[:, 0]
-                    if isinstance(bearish, pd.DataFrame):
-                        bearish = bearish.iloc[:, 0]
-                    
-                    # Convert to numeric and calculate density
-                    bullish = pd.Series(bullish).astype(float)
-                    bearish = pd.Series(bearish).astype(float)
-                    
-                    pattern_density[f"{pattern_name}_bullish"] = bullish.rolling(window=window_size).sum()
-                    pattern_density[f"{pattern_name}_bearish"] = bearish.rolling(window=window_size).sum()
+                    # Handle bullish/bearish patterns
+                    bullish, bearish = self._validate_pattern_signals(result)
+                    pattern_density[f"{pattern_name}_bullish"] = self._calculate_density(bullish, window_size)
+                    pattern_density[f"{pattern_name}_bearish"] = self._calculate_density(bearish, window_size)
                 else:
                     # Handle single signal patterns
-                    if isinstance(result, pd.DataFrame):
-                        result = result.iloc[:, 0]
-                    
-                    # Convert to numeric and calculate density
-                    result = pd.Series(result).astype(float)
-                    pattern_density[pattern_name] = result.rolling(window=window_size).sum()
+                    signal = self._validate_pattern_signals(result)
+                    pattern_density[pattern_name] = self._calculate_density(signal, window_size)
                     
             except Exception as e:
-                print(f"Error clustering pattern {pattern_name}: {str(e)}")
+                print(f"Error processing pattern {pattern_name}: {str(e)}")
+                continue
         
-        # Remove columns with all zeros or NaN
+        # Remove columns with no signals
         pattern_density = pattern_density.loc[:, (pattern_density != 0).any()]
-        pattern_density = pattern_density.loc[:, pattern_density.notna().any()]
         
-        # Perform DBSCAN clustering if we have valid data
-        if not pattern_density.empty:
+        if pattern_density.empty:
+            return pd.DataFrame({'cluster': [-1]}, index=self.df.index)
+        
+        # Perform clustering
+        try:
+            normalized_density = (pattern_density - pattern_density.mean()) / pattern_density.std()
             clustering = DBSCAN(eps=0.5, min_samples=3)
-            try:
-                pattern_density['cluster'] = clustering.fit_predict(pattern_density.fillna(0))
-            except Exception as e:
-                print(f"Error in DBSCAN clustering: {str(e)}")
-                pattern_density['cluster'] = -1  # Mark all as noise if clustering fails
-        else:
-            pattern_density['cluster'] = -1  # Mark all as noise if no patterns found
+            pattern_density['cluster'] = clustering.fit_predict(normalized_density.fillna(0))
+        except Exception as e:
+            print(f"Clustering failed: {str(e)}")
+            pattern_density['cluster'] = -1
         
         return pattern_density
+
+    def _calculate_density(self, signal: pd.Series, window: int) -> pd.Series:
+        """
+        Calculate pattern density using rolling window
+        
+        Args:
+            signal (pd.Series): Pattern signal
+            window (int): Rolling window size
+            
+        Returns:
+            pd.Series: Pattern density
+        """
+        return signal.rolling(window=window, min_periods=1).sum()
+
+
+    def _validate_pattern_signals(self, signals: Union[pd.Series, pd.DataFrame, Tuple]) -> Union[pd.Series, Tuple[pd.Series, pd.Series]]:
+        """
+        Validate and convert pattern signals to proper format
+        
+        Args:
+            signals: Pattern detection signals
+            
+        Returns:
+            Validated and converted signals
+            
+        Raises:
+            ValueError: If signals are in invalid format
+        """
+        if isinstance(signals, tuple):
+            bullish, bearish = signals
+            return (
+                self._convert_to_series(bullish, 'bullish'),
+                self._convert_to_series(bearish, 'bearish')
+            )
+        else:
+            return self._convert_to_series(signals, 'signal')
+
+    def _convert_to_series(self, data: Union[pd.Series, pd.DataFrame], name: str) -> pd.Series:
+        """
+        Convert pattern data to Series format
+        
+        Args:
+            data: Pattern data
+            name: Name for the series
+            
+        Returns:
+            pd.Series: Converted and validated data
+            
+        Raises:
+            ValueError: If data cannot be converted to Series
+        """
+        if isinstance(data, pd.DataFrame):
+            if data.empty:
+                return pd.Series(0, index=self.df.index, name=name)
+            return data.iloc[:, 0].astype(float)
+        elif isinstance(data, pd.Series):
+            return data.astype(float)
+        else:
+            raise ValueError(f"Invalid data format for {name}")
+
 
     def _get_pattern_results(self, pattern_name: str) -> Optional[Union[pd.Series, Tuple[pd.Series, pd.Series]]]:
         """
@@ -1229,39 +1338,65 @@ class CandlestickVisualizer:
         Returns:
             pd.DataFrame: Pattern sequence analysis
         """
-        pattern_methods = self._get_all_pattern_methods()
-        sequences = pd.DataFrame(index=self.df.index)
+        # pattern_methods = self._get_all_pattern_methods()
+        # sequences = pd.DataFrame(index=self.df.index)
         
-        # Generate pattern sequences
+        # # Generate pattern sequences
+        # for pattern_name, pattern_func in pattern_methods.items():
+        #     try:
+        #         result = pattern_func(self.df)
+        #         if isinstance(result, tuple):
+        #             for sub_pattern, sub_name in zip(result, ['bullish', 'bearish']):
+        #                 pattern_key = f"{pattern_name}_{sub_name}"
+        #                 sequences[pattern_key] = sub_pattern.astype(int)
+        #         else:
+        #             sequences[pattern_name] = result.astype(int)
+        #     except Exception as e:
+        #         print(f"Error analyzing sequence for {pattern_name}: {str(e)}")
+        
+        # # Calculate sequence probabilities
+        # sequence_probs = {}
+        # for i in range(len(sequences) - lookback):
+        #     current_seq = tuple(sequences.iloc[i:i+lookback].values.flatten())
+        #     next_move = np.sign(self.df['Close'].iloc[i+lookback+1] - 
+        #                       self.df['Close'].iloc[i+lookback])
+            
+        #     if current_seq not in sequence_probs:
+        #         sequence_probs[current_seq] = {'up': 0, 'down': 0, 'total': 0}
+            
+        #     sequence_probs[current_seq]['total'] += 1
+        #     if next_move > 0:
+        #         sequence_probs[current_seq]['up'] += 1
+        #     elif next_move < 0:
+        #         sequence_probs[current_seq]['down'] += 1
+        
+        # return pd.DataFrame(sequence_probs).T
+            # Use vectorized operations for pattern detection
+        pattern_methods = self._get_all_pattern_methods()
         for pattern_name, pattern_func in pattern_methods.items():
             try:
-                result = pattern_func(self.df)
-                if isinstance(result, tuple):
-                    for sub_pattern, sub_name in zip(result, ['bullish', 'bearish']):
-                        pattern_key = f"{pattern_name}_{sub_name}"
-                        sequences[pattern_key] = sub_pattern.astype(int)
+                results = pattern_func(self.df)
+                if isinstance(results, tuple):
+                    sequences[f"{pattern_name}_bullish"] = results[0].astype(int)
+                    sequences[f"{pattern_name}_bearish"] = results[1].astype(int)
                 else:
-                    sequences[pattern_name] = result.astype(int)
+                    sequences[pattern_name] = results.astype(int)
             except Exception as e:
-                print(f"Error analyzing sequence for {pattern_name}: {str(e)}")
+                print(f"Error in pattern {pattern_name}: {str(e)}")
+                continue
         
-        # Calculate sequence probabilities
-        sequence_probs = {}
-        for i in range(len(sequences) - lookback):
-            current_seq = tuple(sequences.iloc[i:i+lookback].values.flatten())
-            next_move = np.sign(self.df['Close'].iloc[i+lookback+1] - 
-                              self.df['Close'].iloc[i+lookback])
-            
-            if current_seq not in sequence_probs:
-                sequence_probs[current_seq] = {'up': 0, 'down': 0, 'total': 0}
-            
-            sequence_probs[current_seq]['total'] += 1
-            if next_move > 0:
-                sequence_probs[current_seq]['up'] += 1
-            elif next_move < 0:
-                sequence_probs[current_seq]['down'] += 1
+        # Use rolling window for sequence generation
+        sequence_data = []
+        for i in range(lookback, len(sequences)):
+            window = sequences.iloc[i-lookback:i]
+            next_move = np.sign(self.df['Close'].iloc[i] - self.df['Close'].iloc[i-1])
+            sequence_data.append({
+                'sequence': tuple(window.values.flatten()),
+                'next_move': next_move,
+                'date': sequences.index[i]
+            })
         
-        return pd.DataFrame(sequence_probs).T
+        return pd.DataFrame(sequence_data)
 
     def overlay_custom_indicators(self, fig: go.Figure, 
                                 indicators: Dict[str, Callable]) -> go.Figure:

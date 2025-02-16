@@ -4974,6 +4974,252 @@ class MarketRegimeAnalyzer:
         
         return change_score >= 0.4  # Threshold for significant change
     
+    def filter_patterns_by_regime(self,
+                                patterns: pd.DataFrame,
+                                min_reliability: float = 0.6) -> pd.DataFrame:
+        """
+        Filter patterns based on current market regime reliability
+        
+        Args:
+            patterns (pd.DataFrame): Detected patterns
+            min_reliability (float): Minimum reliability threshold
+            
+        Returns:
+            pd.DataFrame: Filtered patterns with regime-specific reliability
+        """
+        current_regime = self.analyze_market_regime()[-1]  # Get most recent regime
+        
+        # Get regime-specific pattern performance
+        regime_performance = self._calculate_regime_pattern_performance(
+            patterns, current_regime)
+        
+        # Filter patterns based on regime performance
+        reliable_patterns = regime_performance[
+            regime_performance['regime_reliability'] >= min_reliability
+        ]
+        
+        return reliable_patterns
+
+    def _calculate_regime_pattern_performance(self,
+                                           patterns: pd.DataFrame,
+                                           current_regime: MarketRegime) -> pd.DataFrame:
+        """
+        Calculate pattern performance specific to current regime
+        
+        Args:
+            patterns (pd.DataFrame): Detected patterns
+            current_regime (MarketRegime): Current market regime
+            
+        Returns:
+            pd.DataFrame: Patterns with regime-specific performance metrics
+        """
+        performance_data = []
+        
+        for _, pattern in patterns.iterrows():
+            # Find similar historical regimes
+            similar_regimes = self._find_similar_regimes(current_regime)
+            
+            # Calculate pattern performance in similar regimes
+            regime_stats = self._analyze_pattern_in_regimes(
+                pattern, similar_regimes)
+            
+            performance_data.append({
+                'pattern_name': pattern['pattern_name'],
+                'direction': pattern.get('direction', 'neutral'),
+                'regime_reliability': regime_stats['success_rate'],
+                'regime_avg_return': regime_stats['avg_return'],
+                'regime_win_rate': regime_stats['win_rate'],
+                'confidence': regime_stats['confidence'],
+                'regime_risk_reward': regime_stats['risk_reward']
+            })
+        
+        return pd.DataFrame(performance_data)
+
+    def _find_similar_regimes(self, 
+                            current_regime: MarketRegime,
+                            lookback_days: int = 252) -> List[MarketRegime]:
+        """
+        Find historical regimes similar to current regime
+        
+        Args:
+            current_regime (MarketRegime): Current market regime
+            lookback_days (int): Days to look back for similar regimes
+            
+        Returns:
+            List[MarketRegime]: List of similar historical regimes
+        """
+        lookback_start = self.df.index[-1] - pd.Timedelta(days=lookback_days)
+        historical_regimes = self.analyze_market_regime(
+            start_date=lookback_start,
+            end_date=self.df.index[-1]
+        )
+        
+        similar_regimes = []
+        
+        for regime in historical_regimes:
+            if self._calculate_regime_similarity(current_regime, regime) >= 0.7:
+                similar_regimes.append(regime)
+        
+        return similar_regimes
+
+    def _calculate_regime_similarity(self,
+                                regime1: MarketRegime,
+                                regime2: MarketRegime) -> float:
+        """
+        Calculate similarity between two market regimes
+        
+        Args:
+            regime1 (MarketRegime): First regime
+            regime2 (MarketRegime): Second regime
+            
+        Returns:
+            float: Similarity score between 0 and 1
+        """
+        # Component weights
+        weights = {
+            'regime_type': 0.3,
+            'volatility': 0.25,
+            'trend': 0.25,
+            'volume': 0.2
+        }
+        
+        # Calculate component similarities
+        similarities = {
+            'regime_type': 1.0 if regime1.regime_type == regime2.regime_type else 0.0,
+            'volatility': self._compare_regime_volatility(regime1.volatility, regime2.volatility),
+            'trend': self._compare_regime_trend(regime1.trend, regime2.trend),
+            'volume': self._compare_regime_volume(regime1.volume, regime2.volume)
+        }
+        
+        # Calculate weighted similarity
+        total_similarity = sum(weights[k] * similarities[k] for k in weights)
+        
+        return total_similarity
+
+    def _analyze_pattern_in_regimes(self,
+                                pattern: pd.Series,
+                                regimes: List[MarketRegime]) -> Dict[str, float]:
+        """
+        Analyze pattern performance in given regimes
+        
+        Args:
+            pattern (pd.Series): Pattern information
+            regimes (List[MarketRegime]): List of market regimes
+            
+        Returns:
+            Dict[str, float]: Performance statistics in these regimes
+        """
+        pattern_results = []
+        
+        for regime in regimes:
+            # Get pattern occurrences during this regime
+            regime_patterns = self._get_patterns_in_regime(
+                pattern['pattern_name'],
+                regime.start_date,
+                regime.end_date
+            )
+            
+            if regime_patterns:
+                # Calculate performance metrics
+                results = self._calculate_pattern_regime_metrics(regime_patterns)
+                pattern_results.append(results)
+        
+        if not pattern_results:
+            return {
+                'success_rate': 0.0,
+                'avg_return': 0.0,
+                'win_rate': 0.0,
+                'confidence': 0.0,
+                'risk_reward': 0.0
+            }
+        
+        # Aggregate results
+        return {
+            'success_rate': np.mean([r['success_rate'] for r in pattern_results]),
+            'avg_return': np.mean([r['avg_return'] for r in pattern_results]),
+            'win_rate': np.mean([r['win_rate'] for r in pattern_results]),
+            'confidence': np.mean([r['confidence'] for r in pattern_results]),
+            'risk_reward': np.mean([r['risk_reward'] for r in pattern_results])
+        }
+
+    def _get_patterns_in_regime(self,
+                            pattern_name: str,
+                            start_date: pd.Timestamp,
+                            end_date: pd.Timestamp) -> List[Dict[str, Any]]:
+        """
+        Get pattern occurrences within a specific regime period
+        
+        Args:
+            pattern_name (str): Name of the pattern
+            start_date (pd.Timestamp): Regime start date
+            end_date (pd.Timestamp): Regime end date
+            
+        Returns:
+            List[Dict[str, Any]]: Pattern occurrences with outcomes
+        """
+        regime_slice = self.df[start_date:end_date]
+        pattern_signals = self._get_pattern_signals(pattern_name, regime_slice)
+        
+        if pattern_signals is None:
+            return []
+        
+        pattern_instances = []
+        
+        if isinstance(pattern_signals, tuple):
+            bullish_signals, bearish_signals = pattern_signals
+            # Process bullish patterns
+            for date in bullish_signals[bullish_signals > 0].index:
+                outcome = self._analyze_pattern_outcome(date, 'bullish')
+                if outcome:
+                    pattern_instances.append(outcome)
+            
+            # Process bearish patterns
+            for date in bearish_signals[bearish_signals > 0].index:
+                outcome = self._analyze_pattern_outcome(date, 'bearish')
+                if outcome:
+                    pattern_instances.append(outcome)
+        else:
+            # Process neutral patterns
+            for date in pattern_signals[pattern_signals > 0].index:
+                outcome = self._analyze_pattern_outcome(date, 'neutral')
+                if outcome:
+                    pattern_instances.append(outcome)
+        
+        return pattern_instances
+
+    def _calculate_pattern_regime_metrics(self,
+                                        pattern_instances: List[Dict[str, Any]]) -> Dict[str, float]:
+        """
+        Calculate performance metrics for pattern instances in a regime
+        
+        Args:
+            pattern_instances (List[Dict[str, Any]]): Pattern instances with outcomes
+            
+        Returns:
+            Dict[str, float]: Performance metrics
+        """
+        if not pattern_instances:
+            return {
+                'success_rate': 0.0,
+                'avg_return': 0.0,
+                'win_rate': 0.0,
+                'confidence': 0.0,
+                'risk_reward': 0.0
+            }
+        
+        successful = sum(1 for p in pattern_instances if p['success'])
+        total_return = sum(p['return'] for p in pattern_instances)
+        winning_trades = sum(1 for p in pattern_instances if p['return'] > 0)
+        
+        metrics = {
+            'success_rate': successful / len(pattern_instances),
+            'avg_return': total_return / len(pattern_instances),
+            'win_rate': winning_trades / len(pattern_instances),
+            'confidence': self._calculate_confidence_score(pattern_instances),
+            'risk_reward': self._calculate_regime_risk_reward(pattern_instances)
+        }
+        
+        return metrics  
         
 class VisualizationCache:
     """Cache manager for visualization calculations"""

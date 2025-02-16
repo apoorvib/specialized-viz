@@ -271,7 +271,44 @@ class CandlestickVisualizer:
         finally:
             # The caller is responsible for closing the figure after use
             pass
-            
+
+    def apply_theme(self, theme: VisualizationTheme) -> None:
+        """
+        Apply theme to visualizer
+        
+        Args:
+            theme (VisualizationTheme): Theme to apply
+        """
+        self.config.color_scheme = theme.color_scheme
+        self._update_theme_settings(theme)
+
+    def _update_theme_settings(self, theme: VisualizationTheme) -> None:
+        """
+        Update visualization settings based on theme
+        
+        Args:
+            theme (VisualizationTheme): Theme to apply
+        """
+        # Update figure layout settings
+        self.fig.update_layout(
+            plot_bgcolor=theme.color_scheme['background'],
+            paper_bgcolor=theme.color_scheme['background'],
+            font=dict(
+                family=theme.font_settings['family'],
+                size=theme.font_settings['size']['axis'],
+                color=theme.color_scheme['text']
+            ),
+            title=dict(
+                font=dict(
+                    family=theme.font_settings['family'],
+                    size=theme.font_settings['size']['title'],
+                    color=theme.color_scheme['text']
+                )
+            ),
+            showlegend=theme.chart_settings['show_legend']
+        )
+
+
     def _cluster_patterns(self, window_size: int = 20) -> pd.DataFrame:
         """
         Cluster pattern occurrences to identify high-density regions
@@ -541,6 +578,209 @@ class CandlestickVisualizer:
         )
         
         return fig
+    
+    def visualize_market_regimes(self, regimes: List[MarketRegime]) -> go.Figure:
+        """
+        Create visualization of market regimes
+        
+        Args:
+            regimes (List[MarketRegime]): List of identified market regimes
+            
+        Returns:
+            go.Figure: Plotly figure with regime visualization
+        """
+        # Create subplot structure
+        fig = make_subplots(
+            rows=3, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.05,
+            subplot_titles=(
+                'Price with Regime Overlay',
+                'Regime Characteristics',
+                'Regime Confidence'
+            ),
+            row_heights=[0.5, 0.3, 0.2]
+        )
+        
+        # Add price chart
+        fig.add_trace(
+            go.Candlestick(
+                x=self.df.index,
+                open=self.df['Open'],
+                high=self.df['High'],
+                low=self.df['Low'],
+                close=self.df['Close'],
+                name='Price'
+            ),
+            row=1, col=1
+        )
+        
+        # Add regime overlays
+        for regime in regimes:
+            # Add regime background
+            fig.add_vrect(
+                x0=regime.start_date,
+                x1=regime.end_date,
+                fillcolor=self._get_regime_color(regime.regime_type),
+                opacity=0.2,
+                layer="below",
+                line_width=0,
+                row=1, col=1
+            )
+            
+            # Add regime characteristics
+            self._add_regime_characteristics(fig, regime, row=2, col=1)
+            
+            # Add confidence indicator
+            fig.add_trace(
+                go.Scatter(
+                    x=[regime.start_date, regime.end_date],
+                    y=[regime.confidence, regime.confidence],
+                    mode='lines',
+                    line=dict(
+                        color=self._get_regime_color(regime.regime_type),
+                        width=2
+                    ),
+                    name=f'Confidence ({regime.regime_type})'
+                ),
+                row=3, col=1
+            )
+        
+        # Update layout
+        fig.update_layout(
+            height=800,
+            showlegend=True,
+            title_text="Market Regime Analysis",
+            xaxis_rangeslider_visible=False
+        )
+        
+        return fig
+
+    def _get_regime_color(self, regime_type: str) -> str:
+        """
+        Get color for regime visualization
+        
+        Args:
+            regime_type (str): Type of market regime
+            
+        Returns:
+            str: Color code for regime
+        """
+        color_map = {
+            'trending': 'rgba(46, 204, 113, 0.8)',
+            'ranging': 'rgba(52, 152, 219, 0.8)',
+            'transitioning': 'rgba(155, 89, 182, 0.8)',
+            'volatile': 'rgba(231, 76, 60, 0.8)',
+            'consolidating': 'rgba(241, 196, 15, 0.8)'
+        }
+        
+        return color_map.get(regime_type, 'rgba(149, 165, 166, 0.8)')
+
+    def _add_regime_characteristics(self, 
+                                fig: go.Figure, 
+                                regime: MarketRegime,
+                                row: int,
+                                col: int) -> None:
+        """
+        Add regime characteristics visualization
+        
+        Args:
+            fig (go.Figure): Plotly figure
+            regime (MarketRegime): Market regime object
+            row (int): Subplot row
+            col (int): Subplot column
+        """
+        # Create characteristic indicators
+        characteristics = {
+            'Volatility': self._normalize_regime_value(regime.volatility),
+            'Trend': self._normalize_regime_value(regime.trend),
+            'Volume': self._normalize_regime_value(regime.volume)
+        }
+        
+        # Add characteristics as stacked bars
+        for i, (char_name, value) in enumerate(characteristics.items()):
+            fig.add_trace(
+                go.Bar(
+                    x=[[regime.start_date, regime.end_date]],
+                    y=[value],
+                    name=f'{char_name} ({regime.regime_type})',
+                    marker_color=self._get_characteristic_color(char_name, value),
+                    showlegend=False
+                ),
+                row=row, col=col
+            )
+
+    def _normalize_regime_value(self, regime_value: str) -> float:
+        """
+        Normalize regime characteristic values for visualization
+        
+        Args:
+            regime_value (str): Regime characteristic value
+            
+        Returns:
+            float: Normalized value between 0 and 1
+        """
+        value_maps = {
+            'volatility': {
+                'low': 0.2,
+                'medium': 0.5,
+                'high': 0.8,
+                'very_high': 1.0
+            },
+            'trend': {
+                'strong_bearish': 0.0,
+                'bearish': 0.2,
+                'weak_bearish': 0.4,
+                'neutral': 0.5,
+                'weak_bullish': 0.6,
+                'bullish': 0.8,
+                'strong_bullish': 1.0
+            },
+            'volume': {
+                'very_low': 0.0,
+                'low': 0.25,
+                'normal': 0.5,
+                'high': 0.75,
+                'very_high': 1.0
+            }
+        }
+        
+        # Try to match the regime value with each map
+        for map_type, value_map in value_maps.items():
+            if regime_value.lower() in value_map:
+                return value_map[regime_value.lower()]
+        
+        return 0.5  # Default value if no match found
+
+    def _get_characteristic_color(self, characteristic: str, value: float) -> str:
+        """
+        Get color for regime characteristic visualization
+        
+        Args:
+            characteristic (str): Name of characteristic
+            value (float): Normalized value
+            
+        Returns:
+            str: Color code for characteristic
+        """
+        color_scales = {
+            'Volatility': [
+                [0, 'rgba(46, 204, 113, 0.8)'],  # Green for low volatility
+                [1, 'rgba(231, 76, 60, 0.8)']    # Red for high volatility
+            ],
+            'Trend': [
+                [0, 'rgba(231, 76, 60, 0.8)'],   # Red for bearish
+                [0.5, 'rgba(149, 165, 166, 0.8)'], # Gray for neutral
+                [1, 'rgba(46, 204, 113, 0.8)']    # Green for bullish
+            ],
+            'Volume': [
+                [0, 'rgba(149, 165, 166, 0.8)'],  # Gray for low volume
+                [1, 'rgba(52, 152, 219, 0.8)']    # Blue for high volume
+            ]
+        }
+        
+        scale = color_scales.get(characteristic, color_scales['Volume'])
+        return self._interpolate_color(value, scale)
     
     def create_pattern_reliability_chart(self, lookback_window: int = 100) -> go.Figure:
         """
@@ -972,6 +1212,154 @@ class CandlestickVisualizer:
             
         except Exception as e:
             raise ValueError(f"Failed to create dashboard: {str(e)}")
+
+    def _find_similar_patterns(self,
+                            pattern: Dict[str, Any],
+                            lookback_period: int) -> List[Dict[str, Any]]:
+        """
+        Find similar historical patterns
+        
+        Args:
+            pattern (Dict[str, Any]): Current pattern to compare
+            lookback_period (int): Historical lookback period
+            
+        Returns:
+            List[Dict[str, Any]]: List of similar historical patterns
+        """
+        similar_patterns = []
+        pattern_start_idx = self.df.index.get_loc(pattern['start_date'])
+        
+        # Look back from the current pattern
+        start_idx = max(0, pattern_start_idx - lookback_period)
+        historical_slice = slice(start_idx, pattern_start_idx)
+        
+        # Get pattern detection results for the historical period
+        historical_signals = self._get_pattern_signals(pattern['name'])
+        
+        if historical_signals is None:
+            return []
+            
+        if isinstance(historical_signals, tuple):
+            if pattern['direction'] == 'bullish':
+                signals = historical_signals[0].iloc[historical_slice]
+            else:
+                signals = historical_signals[1].iloc[historical_slice]
+        else:
+            signals = historical_signals.iloc[historical_slice]
+        
+        # Find occurrences
+        for idx in signals[signals].index:
+            similar_pattern = self._extract_pattern_data(idx, pattern['name'])
+            if similar_pattern:
+                similar_patterns.append(similar_pattern)
+        
+        return similar_patterns
+
+
+    def _interpolate_color(self, value: float, color_scale: List[List]) -> str:
+        """
+        Interpolate between colors based on value
+        
+        Args:
+            value (float): Value between 0 and 1
+            color_scale (List[List]): List of [position, color] pairs
+            
+        Returns:
+            str: Interpolated color in rgba format
+        """
+        # Find the color positions that bound our value
+        for i in range(len(color_scale) - 1):
+            pos1, color1 = color_scale[i]
+            pos2, color2 = color_scale[i + 1]
+            
+            if pos1 <= value <= pos2:
+                # Extract rgba components
+                rgba1 = self._parse_rgba(color1)
+                rgba2 = self._parse_rgba(color2)
+                
+                # Calculate interpolation factor
+                factor = (value - pos1) / (pos2 - pos1)
+                
+                # Interpolate each component
+                r = rgba1[0] + (rgba2[0] - rgba1[0]) * factor
+                g = rgba1[1] + (rgba2[1] - rgba1[1]) * factor
+                b = rgba1[2] + (rgba2[2] - rgba1[2]) * factor
+                a = rgba1[3] + (rgba2[3] - rgba1[3]) * factor
+                
+                return f'rgba({int(r)}, {int(g)}, {int(b)}, {a})'
+                
+        # Return the last color if value is out of range
+        return color_scale[-1][1]
+
+    def _parse_rgba(self, color_str: str) -> Tuple[float, float, float, float]:
+        """
+        Parse rgba color string into components
+        
+        Args:
+            color_str (str): Color in rgba format
+            
+        Returns:
+            Tuple[float, float, float, float]: RGBA components
+        """
+        # Remove rgba() and split components
+        components = color_str.replace('rgba(', '').replace(')', '').split(',')
+        return tuple(float(c.strip()) for c in components)
+
+    def analyze_pattern_completion(self, 
+                                pattern: Dict[str, Any],
+                                lookback_period: int = 100) -> Dict[str, float]:
+        """
+        Analyze pattern completion probability and targets
+        
+        Args:
+            pattern (Dict[str, Any]): Pattern information
+            lookback_period (int): Historical lookback period
+            
+        Returns:
+            Dict[str, float]: Completion analysis metrics
+        """
+        try:
+            # Get historical patterns of the same type
+            historical_patterns = self._find_similar_patterns(
+                pattern, lookback_period)
+            
+            if not historical_patterns:
+                return {
+                    'completion_probability': 0.0,
+                    'average_target_reach': 0.0,
+                    'average_stop_hit': 0.0,
+                    'risk_reward_ratio': 0.0
+                }
+                
+            # Calculate completion metrics
+            completions = []
+            target_reaches = []
+            stop_hits = []
+            
+            for hist_pattern in historical_patterns:
+                completion_data = self._calculate_pattern_outcome(hist_pattern)
+                completions.append(completion_data['completed'])
+                target_reaches.append(completion_data['target_reached'])
+                stop_hits.append(completion_data['stop_hit'])
+            
+            # Calculate probabilities
+            completion_prob = sum(completions) / len(completions)
+            target_prob = sum(target_reaches) / len(target_reaches)
+            stop_prob = sum(stop_hits) / len(stop_hits)
+            
+            # Calculate risk/reward
+            risk_reward = self._calculate_risk_reward(pattern)
+            
+            return {
+                'completion_probability': completion_prob,
+                'target_reach_probability': target_prob,
+                'stop_hit_probability': stop_prob,
+                'risk_reward_ratio': risk_reward
+            }
+            
+        except Exception as e:
+            print(f"Error analyzing pattern completion: {str(e)}")
+            return {}
 
     def _create_pattern_filter_buttons(self) -> List[Dict]:
         """
@@ -2698,6 +3086,7 @@ class PatternQualityMetrics:
         
         return trend_alignment
     
+@dataclass    
 class MarketRegime:
     """
     Represents a market regime with its characteristics
@@ -2718,6 +3107,73 @@ class MarketRegime:
         self.end_date = end_date
         self.confidence = confidence
 
+class MarketRegimeAnalyzer:
+    """
+    Analyzes market regimes and their transitions
+    
+    This class is responsible for detecting and analyzing different market regimes,
+    including volatility states, trend phases, and volume profiles.
+    
+    Attributes:
+        df (pd.DataFrame): DataFrame containing OHLCV data
+        window_size (int): Default window size for calculations
+        min_regime_duration (int): Minimum number of periods for a regime
+        regime_cache (Dict): Cache for computed regime data
+    """
+    
+    def __init__(self, 
+                 df: pd.DataFrame, 
+                 window_size: int = 20,
+                 min_regime_duration: int = 5):
+        """
+        Initialize MarketRegimeAnalyzer
+        
+        Args:
+            df (pd.DataFrame): OHLCV data
+            window_size (int): Default window for calculations
+            min_regime_duration (int): Minimum regime duration
+            
+        Raises:
+            ValueError: If required columns are missing in DataFrame
+        """
+        self._validate_dataframe(df)
+        self.df = df.copy()
+        self.window_size = window_size
+        self.min_regime_duration = min_regime_duration
+        self.regime_cache = {}
+        
+        # Initialize technical analysis indicators
+        self._initialize_indicators()
+
+    def _validate_dataframe(self, df: pd.DataFrame) -> None:
+        """
+        Validate input DataFrame has required columns
+        
+        Args:
+            df (pd.DataFrame): Input DataFrame
+            
+        Raises:
+            ValueError: If required columns are missing
+        """
+        required_columns = ['Open', 'High', 'Low', 'Close']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        
+        if missing_columns:
+            raise ValueError(f"Missing required columns: {missing_columns}")
+        
+        if not isinstance(df.index, pd.DatetimeIndex):
+            raise ValueError("DataFrame index must be DatetimeIndex")
+
+    def _initialize_indicators(self) -> None:
+        """Initialize technical indicators used in regime analysis"""
+        # Pre-calculate common indicators used across methods
+        self.sma_short = self.df['Close'].rolling(window=self.window_size).mean()
+        self.sma_long = self.df['Close'].rolling(window=self.window_size * 2).mean()
+        self.volatility = self.df['Close'].pct_change().rolling(window=self.window_size).std()
+        
+        if 'Volume' in self.df.columns:
+            self.volume_ma = self.df['Volume'].rolling(window=self.window_size).mean()
+            
     def analyze_market_regime(self, 
                             window_size: int = 20,
                             volatility_window: int = 20,
@@ -3061,205 +3517,77 @@ class MarketRegime:
         
         return change_score >= 0.4  # Threshold for significant change
     
-    def visualize_market_regimes(self, regimes: List[MarketRegime]) -> go.Figure:
-        """
-        Create visualization of market regimes
         
-        Args:
-            regimes (List[MarketRegime]): List of identified market regimes
-            
-        Returns:
-            go.Figure: Plotly figure with regime visualization
-        """
-        # Create subplot structure
-        fig = make_subplots(
-            rows=3, cols=1,
-            shared_xaxes=True,
-            vertical_spacing=0.05,
-            subplot_titles=(
-                'Price with Regime Overlay',
-                'Regime Characteristics',
-                'Regime Confidence'
-            ),
-            row_heights=[0.5, 0.3, 0.2]
-        )
-        
-        # Add price chart
-        fig.add_trace(
-            go.Candlestick(
-                x=self.df.index,
-                open=self.df['Open'],
-                high=self.df['High'],
-                low=self.df['Low'],
-                close=self.df['Close'],
-                name='Price'
-            ),
-            row=1, col=1
-        )
-        
-        # Add regime overlays
-        for regime in regimes:
-            # Add regime background
-            fig.add_vrect(
-                x0=regime.start_date,
-                x1=regime.end_date,
-                fillcolor=self._get_regime_color(regime.regime_type),
-                opacity=0.2,
-                layer="below",
-                line_width=0,
-                row=1, col=1
-            )
-            
-            # Add regime characteristics
-            self._add_regime_characteristics(fig, regime, row=2, col=1)
-            
-            # Add confidence indicator
-            fig.add_trace(
-                go.Scatter(
-                    x=[regime.start_date, regime.end_date],
-                    y=[regime.confidence, regime.confidence],
-                    mode='lines',
-                    line=dict(
-                        color=self._get_regime_color(regime.regime_type),
-                        width=2
-                    ),
-                    name=f'Confidence ({regime.regime_type})'
-                ),
-                row=3, col=1
-            )
-        
-        # Update layout
-        fig.update_layout(
-            height=800,
-            showlegend=True,
-            title_text="Market Regime Analysis",
-            xaxis_rangeslider_visible=False
-        )
-        
-        return fig
+class VisualizationCache:
+    """Cache manager for visualization calculations"""
+    
+    def __init__(self, max_size: int = 1000):
+        self.max_size = max_size
+        self._cache = {}
+        self._access_times = {}
+        self._lock = threading.Lock()
+    
+    def get(self, key: str) -> Any:
+        """Get value from cache"""
+        with self._lock:
+            if key in self._cache:
+                self._access_times[key] = time.time()
+                return self._cache[key]
+            return None
+    
+    def set(self, key: str, value: Any) -> None:
+        """Set value in cache"""
+        with self._lock:
+            if len(self._cache) >= self.max_size:
+                self._evict_oldest()
+            self._cache[key] = value
+            self._access_times[key] = time.time()
+    
+    def _evict_oldest(self) -> None:
+        """Remove least recently used items"""
+        oldest_key = min(self._access_times.items(), key=lambda x: x[1])[0]
+        del self._cache[oldest_key]
+        del self._access_times[oldest_key]
 
-    def _get_regime_color(self, regime_type: str) -> str:
-        """
-        Get color for regime visualization
-        
-        Args:
-            regime_type (str): Type of market regime
-            
-        Returns:
-            str: Color code for regime
-        """
-        color_map = {
-            'trending': 'rgba(46, 204, 113, 0.8)',
-            'ranging': 'rgba(52, 152, 219, 0.8)',
-            'transitioning': 'rgba(155, 89, 182, 0.8)',
-            'volatile': 'rgba(231, 76, 60, 0.8)',
-            'consolidating': 'rgba(241, 196, 15, 0.8)'
+# New class for theme management
+class VisualizationTheme:
+    """Theme manager for visualization customization"""
+    
+    def __init__(self, theme_name: str = "default"):
+        self.theme_name = theme_name
+        self.color_scheme = self._get_default_colors()
+        self.font_settings = self._get_default_fonts()
+        self.chart_settings = self._get_default_chart_settings()
+    
+    def _get_default_colors(self) -> Dict[str, str]:
+        return {
+            'background': '#ffffff',
+            'text': '#2c3e50',
+            'grid': '#ecf0f1',
+            'bullish': '#2ecc71',
+            'bearish': '#e74c3c',
+            'neutral': '#3498db',
+            'volume_up': '#2ecc71',
+            'volume_down': '#e74c3c'
         }
-        
-        return color_map.get(regime_type, 'rgba(149, 165, 166, 0.8)')
-
-    def _add_regime_characteristics(self, 
-                                fig: go.Figure, 
-                                regime: MarketRegime,
-                                row: int,
-                                col: int) -> None:
-        """
-        Add regime characteristics visualization
-        
-        Args:
-            fig (go.Figure): Plotly figure
-            regime (MarketRegime): Market regime object
-            row (int): Subplot row
-            col (int): Subplot column
-        """
-        # Create characteristic indicators
-        characteristics = {
-            'Volatility': self._normalize_regime_value(regime.volatility),
-            'Trend': self._normalize_regime_value(regime.trend),
-            'Volume': self._normalize_regime_value(regime.volume)
-        }
-        
-        # Add characteristics as stacked bars
-        for i, (char_name, value) in enumerate(characteristics.items()):
-            fig.add_trace(
-                go.Bar(
-                    x=[[regime.start_date, regime.end_date]],
-                    y=[value],
-                    name=f'{char_name} ({regime.regime_type})',
-                    marker_color=self._get_characteristic_color(char_name, value),
-                    showlegend=False
-                ),
-                row=row, col=col
-            )
-
-    def _normalize_regime_value(self, regime_value: str) -> float:
-        """
-        Normalize regime characteristic values for visualization
-        
-        Args:
-            regime_value (str): Regime characteristic value
-            
-        Returns:
-            float: Normalized value between 0 and 1
-        """
-        value_maps = {
-            'volatility': {
-                'low': 0.2,
-                'medium': 0.5,
-                'high': 0.8,
-                'very_high': 1.0
-            },
-            'trend': {
-                'strong_bearish': 0.0,
-                'bearish': 0.2,
-                'weak_bearish': 0.4,
-                'neutral': 0.5,
-                'weak_bullish': 0.6,
-                'bullish': 0.8,
-                'strong_bullish': 1.0
-            },
-            'volume': {
-                'very_low': 0.0,
-                'low': 0.25,
-                'normal': 0.5,
-                'high': 0.75,
-                'very_high': 1.0
+    
+    def _get_default_fonts(self) -> Dict[str, Any]:
+        return {
+            'family': 'Arial, sans-serif',
+            'size': {
+                'title': 16,
+                'axis': 12,
+                'label': 10,
+                'annotation': 10
             }
         }
-        
-        # Try to match the regime value with each map
-        for map_type, value_map in value_maps.items():
-            if regime_value.lower() in value_map:
-                return value_map[regime_value.lower()]
-        
-        return 0.5  # Default value if no match found
-
-    def _get_characteristic_color(self, characteristic: str, value: float) -> str:
-        """
-        Get color for regime characteristic visualization
-        
-        Args:
-            characteristic (str): Name of characteristic
-            value (float): Normalized value
-            
-        Returns:
-            str: Color code for characteristic
-        """
-        color_scales = {
-            'Volatility': [
-                [0, 'rgba(46, 204, 113, 0.8)'],  # Green for low volatility
-                [1, 'rgba(231, 76, 60, 0.8)']    # Red for high volatility
-            ],
-            'Trend': [
-                [0, 'rgba(231, 76, 60, 0.8)'],   # Red for bearish
-                [0.5, 'rgba(149, 165, 166, 0.8)'], # Gray for neutral
-                [1, 'rgba(46, 204, 113, 0.8)']    # Green for bullish
-            ],
-            'Volume': [
-                [0, 'rgba(149, 165, 166, 0.8)'],  # Gray for low volume
-                [1, 'rgba(52, 152, 219, 0.8)']    # Blue for high volume
-            ]
+    
+    def _get_default_chart_settings(self) -> Dict[str, Any]:
+        return {
+            'padding': {'top': 10, 'right': 50, 'bottom': 20, 'left': 50},
+            'grid': True,
+            'grid_opacity': 0.1,
+            'show_legend': True,
+            'legend_position': 'top'
         }
-        
-        scale = color_scales.get(characteristic, color_scales['Volume'])
-        return self._interpolate_color(value, scale)
+

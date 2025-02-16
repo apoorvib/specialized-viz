@@ -1770,6 +1770,190 @@ class CandlestickVisualizer:
             return (abs(current_price - targets['first']) <= 
                     abs(current_price - stops['initial']))
 
+    def _compare_volatility(self,
+                        current_vol: float,
+                        historical_vol: float,
+                        tolerance: float = 0.3) -> float:
+        """
+        Compare current and historical volatility levels
+        
+        Args:
+            current_vol (float): Current volatility
+            historical_vol (float): Historical volatility
+            tolerance (float): Maximum acceptable difference
+            
+        Returns:
+            float: Similarity score between 0 and 1
+        """
+        if current_vol == 0 or historical_vol == 0:
+            return 0.0
+            
+        vol_ratio = min(current_vol, historical_vol) / max(current_vol, historical_vol)
+        
+        # Scale similarity score based on ratio
+        if vol_ratio >= (1 - tolerance):
+            return 1.0
+        elif vol_ratio <= (1 - 2 * tolerance):
+            return 0.0
+        else:
+            return (vol_ratio - (1 - 2 * tolerance)) / tolerance
+
+    def _compare_trend(self,
+                    current_trend: str,
+                    historical_trend: str) -> float:
+        """
+        Compare current and historical market trends
+        
+        Args:
+            current_trend (str): Current trend classification
+            historical_trend (str): Historical trend classification
+            
+        Returns:
+            float: Similarity score between 0 and 1
+        """
+        trend_weights = {
+            'strong_uptrend': 2,
+            'uptrend': 1,
+            'sideways': 0,
+            'downtrend': -1,
+            'strong_downtrend': -2
+        }
+        
+        try:
+            current_weight = trend_weights[current_trend]
+            historical_weight = trend_weights[historical_trend]
+            
+            # Calculate similarity based on weight difference
+            diff = abs(current_weight - historical_weight)
+            if diff == 0:
+                return 1.0
+            elif diff == 1:
+                return 0.7
+            elif diff == 2:
+                return 0.3
+            else:
+                return 0.0
+                
+        except KeyError:
+            return 0.0
+
+    def _compare_volume_profile(self,
+                            current_profile: Dict[str, float],
+                            historical_profile: Dict[str, float]) -> float:
+        """
+        Compare current and historical volume profiles
+        
+        Args:
+            current_profile (Dict[str, float]): Current volume metrics
+            historical_profile (Dict[str, float]): Historical volume metrics
+            
+        Returns:
+            float: Similarity score between 0 and 1
+        """
+        similarity_scores = []
+        
+        for metric in ['relative_volume', 'volume_trend', 'volume_distribution']:
+            try:
+                current_value = current_profile[metric]
+                historical_value = historical_profile[metric]
+                
+                if isinstance(current_value, str):
+                    # Compare categorical values
+                    similarity_scores.append(
+                        1.0 if current_value == historical_value else 0.0
+                    )
+                else:
+                    # Compare numerical values
+                    ratio = min(current_value, historical_value) / max(current_value, historical_value)
+                    similarity_scores.append(ratio)
+                    
+            except (KeyError, ZeroDivisionError):
+                similarity_scores.append(0.0)
+        
+        return np.mean(similarity_scores)
+
+    def _compare_momentum(self,
+                        current_momentum: Dict[str, float],
+                        historical_momentum: Dict[str, float]) -> float:
+        """
+        Compare current and historical momentum indicators
+        
+        Args:
+            current_momentum (Dict[str, float]): Current momentum metrics
+            historical_momentum (Dict[str, float]): Historical momentum metrics
+            
+        Returns:
+            float: Similarity score between 0 and 1
+        """
+        indicator_weights = {
+            'rsi': 0.3,
+            'macd': 0.3,
+            'momentum': 0.2,
+            'rate_of_change': 0.2
+        }
+        
+        weighted_similarity = 0.0
+        total_weight = 0.0
+        
+        for indicator, weight in indicator_weights.items():
+            try:
+                current_value = current_momentum[indicator]
+                historical_value = historical_momentum[indicator]
+                
+                # Calculate normalized difference
+                if indicator == 'rsi':
+                    # RSI is already normalized
+                    similarity = 1 - abs(current_value - historical_value) / 100
+                else:
+                    # Normalize other indicators
+                    max_val = max(abs(current_value), abs(historical_value))
+                    if max_val == 0:
+                        similarity = 1.0
+                    else:
+                        similarity = 1 - abs(current_value - historical_value) / max_val
+                
+                weighted_similarity += weight * similarity
+                total_weight += weight
+                
+            except (KeyError, ZeroDivisionError):
+                continue
+        
+        if total_weight == 0:
+            return 0.0
+            
+        return weighted_similarity / total_weight
+
+    def _calculate_momentum_indicators(self, data: pd.DataFrame) -> Dict[str, float]:
+        """
+        Calculate various momentum indicators
+        
+        Args:
+            data (pd.DataFrame): Price data
+            
+        Returns:
+            Dict[str, float]: Momentum indicators
+        """
+        close_prices = data['Close']
+        
+        try:
+            indicators = {
+                'rsi': self._calculate_rsi(close_prices).iloc[-1],
+                'macd': self._calculate_macd(close_prices).iloc[-1],
+                'momentum': (close_prices.iloc[-1] / close_prices.iloc[-5] - 1) * 100,
+                'rate_of_change': (close_prices.pct_change(5) * 100).iloc[-1]
+            }
+            
+            return indicators
+            
+        except Exception as e:
+            print(f"Error calculating momentum indicators: {str(e)}")
+            return {
+                'rsi': 50.0,
+                'macd': 0.0,
+                'momentum': 0.0,
+                'rate_of_change': 0.0
+            }
+
     def predict_pattern_breakout(self,
                             lookback_period: int = 100,
                             confidence_threshold: float = 0.7) -> pd.DataFrame:

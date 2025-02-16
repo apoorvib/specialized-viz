@@ -1581,6 +1581,196 @@ class CandlestickVisualizer:
         
         return pd.DataFrame(performance_data)
 
+    def _calculate_trade_metrics(self,
+                            entry_date: pd.Timestamp,
+                            direction: str,
+                            max_holding_period: int = 20) -> Dict[str, float]:
+        """
+        Calculate metrics for a single trade/pattern occurrence
+        
+        Args:
+            entry_date (pd.Timestamp): Pattern occurrence date
+            direction (str): Pattern direction
+            max_holding_period (int): Maximum bars to hold position
+            
+        Returns:
+            Dict[str, float]: Trade metrics
+        """
+        try:
+            entry_idx = self.df.index.get_loc(entry_date)
+            if entry_idx + max_holding_period >= len(self.df):
+                max_holding_period = len(self.df) - entry_idx - 1
+                
+            if max_holding_period <= 0:
+                raise ValueError("Insufficient data for trade analysis")
+                
+            # Get trade data
+            trade_data = self.df.iloc[entry_idx:entry_idx + max_holding_period + 1]
+            entry_price = trade_data['Close'].iloc[0]
+            
+            # Calculate targets and stops
+            targets, stops = self._calculate_pattern_targets(trade_data.iloc[0], direction)
+            
+            # Initialize metrics
+            metrics = {
+                'return': 0.0,
+                'holding_period': max_holding_period,
+                'max_adverse': 0.0,
+                'max_favorable': 0.0,
+                'exit_reason': 'time_exit'
+            }
+            
+            # Track price movement
+            for i, (_, prices) in enumerate(trade_data.iterrows()):
+                if i == 0:  # Skip entry bar
+                    continue
+                    
+                current_price = prices['Close']
+                price_change = (current_price - entry_price) / entry_price
+                
+                # Update max moves
+                if direction == 'bullish':
+                    adverse_move = min(0, price_change)
+                    favorable_move = max(0, price_change)
+                else:  # bearish or neutral
+                    adverse_move = max(0, price_change)
+                    favorable_move = min(0, price_change)
+                    
+                metrics['max_adverse'] = min(metrics['max_adverse'], adverse_move)
+                metrics['max_favorable'] = max(metrics['max_favorable'], favorable_move)
+                
+                # Check for exit conditions
+                if self._check_exit_conditions(current_price, targets, stops, direction):
+                    metrics.update({
+                        'return': price_change,
+                        'holding_period': i,
+                        'exit_reason': 'target_or_stop'
+                    })
+                    break
+                    
+                # Update final return if no exit triggered
+                if i == len(trade_data) - 1:
+                    metrics['return'] = price_change
+            
+            return metrics
+            
+        except Exception as e:
+            raise ValueError(f"Error calculating trade metrics: {str(e)}")
+
+    def _calculate_sharpe_ratio(self, returns: List[float]) -> float:
+        """
+        Calculate Sharpe ratio for pattern returns
+        
+        Args:
+            returns (List[float]): List of pattern returns
+            
+        Returns:
+            float: Sharpe ratio
+        """
+        if not returns or len(returns) < 2:
+            return 0.0
+            
+        returns_array = np.array(returns)
+        avg_return = np.mean(returns_array)
+        std_return = np.std(returns_array)
+        
+        if std_return == 0:
+            return 0.0
+            
+        # Annualize assuming daily returns
+        sharpe = avg_return / std_return * np.sqrt(252)
+        return sharpe
+
+    def _calculate_profit_factor(self, returns: List[float]) -> float:
+        """
+        Calculate profit factor (gross profits / gross losses)
+        
+        Args:
+            returns (List[float]): List of pattern returns
+            
+        Returns:
+            float: Profit factor
+        """
+        if not returns:
+            return 0.0
+            
+        profits = sum(r for r in returns if r > 0)
+        losses = sum(abs(r) for r in returns if r < 0)
+        
+        if losses == 0:
+            return 999.0 if profits > 0 else 0.0
+            
+        return profits / losses
+
+    def _calculate_market_trend(self, window: int = 50) -> str:
+        """
+        Calculate overall market trend
+        
+        Args:
+            window (int): Window for trend calculation
+            
+        Returns:
+            str: Market trend classification
+        """
+        try:
+            # Calculate moving averages
+            sma_short = self.df['Close'].rolling(window=window//2).mean()
+            sma_long = self.df['Close'].rolling(window=window).mean()
+            
+            # Get current values
+            current_price = self.df['Close'].iloc[-1]
+            current_short_ma = sma_short.iloc[-1]
+            current_long_ma = sma_long.iloc[-1]
+            
+            # Calculate trend strength
+            trend_strength = (current_price / current_long_ma - 1) * 100
+            
+            # Classify trend
+            if current_short_ma > current_long_ma:
+                if trend_strength > 5:
+                    return 'strong_uptrend'
+                else:
+                    return 'uptrend'
+            elif current_short_ma < current_long_ma:
+                if trend_strength < -5:
+                    return 'strong_downtrend'
+                else:
+                    return 'downtrend'
+            else:
+                return 'sideways'
+                
+        except Exception as e:
+            print(f"Error calculating market trend: {str(e)}")
+            return 'unknown'
+
+    def _check_exit_conditions(self,
+                            current_price: float,
+                            targets: Dict[str, float],
+                            stops: Dict[str, float],
+                            direction: str) -> bool:
+        """
+        Check if exit conditions are met
+        
+        Args:
+            current_price (float): Current price
+            targets (Dict[str, float]): Target prices
+            stops (Dict[str, float]): Stop prices
+            direction (str): Trade direction
+            
+        Returns:
+            bool: True if exit conditions met
+        """
+        if direction == 'bullish':
+            return (current_price >= targets['first'] or 
+                    current_price <= stops['initial'])
+        elif direction == 'bearish':
+            return (current_price <= targets['first'] or 
+                    current_price >= stops['initial'])
+        else:  # neutral
+            return (abs(current_price - targets['first']) <= 
+                    abs(current_price - stops['initial']))
+
+
     def _calculate_pattern_metrics(self,
                                 signal: pd.Series,
                                 pattern_name: str,

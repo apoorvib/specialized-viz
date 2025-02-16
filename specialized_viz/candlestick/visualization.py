@@ -1416,6 +1416,224 @@ class CandlestickVisualizer:
             print(f"Error in completion analysis: {str(e)}")
             return {'completed': False, 'partial': False}
 
+    def _calculate_pattern_targets(self,
+                                pattern_bar: pd.Series,
+                                direction: str) -> Tuple[Dict[str, float], Dict[str, float]]:
+        """
+        Calculate price targets and stop levels for pattern
+        
+        Args:
+            pattern_bar (pd.Series): Bar data where pattern occurred
+            direction (str): Pattern direction ('bullish', 'bearish', 'neutral')
+            
+        Returns:
+            Tuple[Dict[str, float], Dict[str, float]]: Targets and stops
+        """
+        # Get price levels
+        high = pattern_bar['High']
+        low = pattern_bar['Low']
+        close = pattern_bar['Close']
+        pattern_range = high - low
+        
+        if direction == 'bullish':
+            targets = {
+                'partial': close + pattern_range * 0.5,
+                'first': close + pattern_range,
+                'second': close + pattern_range * 1.5,
+                'third': close + pattern_range * 2.0
+            }
+            stops = {
+                'initial': low - pattern_range * 0.2,
+                'breakeven': close,
+                'trailing': close + pattern_range * 0.5
+            }
+        
+        elif direction == 'bearish':
+            targets = {
+                'partial': close - pattern_range * 0.5,
+                'first': close - pattern_range,
+                'second': close - pattern_range * 1.5,
+                'third': close - pattern_range * 2.0
+            }
+            stops = {
+                'initial': high + pattern_range * 0.2,
+                'breakeven': close,
+                'trailing': close - pattern_range * 0.5
+            }
+        
+        else:  # neutral
+            targets = {
+                'partial': close + (pattern_range * 0.3 * (1 if close > open else -1)),
+                'first': close + (pattern_range * 0.6 * (1 if close > open else -1)),
+                'second': close + (pattern_range * 0.9 * (1 if close > open else -1)),
+                'third': close + (pattern_range * 1.2 * (1 if close > open else -1))
+            }
+            stops = {
+                'initial': close - (pattern_range * 0.3 * (1 if close > open else -1)),
+                'breakeven': close,
+                'trailing': close + (pattern_range * 0.3 * (1 if close > open else -1))
+            }
+        
+        return targets, stops
+
+    def _calculate_risk_reward_ratio(self,
+                                pattern_name: str,
+                                direction: str) -> float:
+        """
+        Calculate risk/reward ratio for pattern
+        
+        Args:
+            pattern_name (str): Name of the pattern
+            direction (str): Pattern direction
+            
+        Returns:
+            float: Risk/reward ratio
+        """
+        try:
+            # Get recent pattern signals
+            signals = self._get_pattern_signals(pattern_name)
+            if signals is None:
+                return 0.0
+                
+            if isinstance(signals, tuple):
+                signal = signals[0] if direction == 'bullish' else signals[1]
+            else:
+                signal = signals
+                
+            # Get most recent occurrence
+            recent_dates = signal[signal > 0].index[-10:]  # Last 10 occurrences
+            
+            if len(recent_dates) == 0:
+                return 0.0
+                
+            # Calculate average R/R from recent patterns
+            risk_rewards = []
+            for date in recent_dates:
+                idx = self.df.index.get_loc(date)
+                pattern_bar = self.df.iloc[idx]
+                
+                targets, stops = self._calculate_pattern_targets(pattern_bar, direction)
+                
+                # Calculate R/R using first target and initial stop
+                reward = abs(targets['first'] - pattern_bar['Close'])
+                risk = abs(stops['initial'] - pattern_bar['Close'])
+                
+                if risk > 0:
+                    risk_rewards.append(reward / risk)
+            
+            return np.mean(risk_rewards) if risk_rewards else 0.0
+            
+        except Exception as e:
+            print(f"Error calculating R/R ratio: {str(e)}")
+            return 0.0
+
+    def analyze_historical_performance(self,
+                                    min_occurrences: int = 20,
+                                    lookback_days: int = 252) -> pd.DataFrame:
+        """
+        Analyze historical performance of detected patterns
+        
+        Args:
+            min_occurrences (int): Minimum pattern occurrences for analysis
+            lookback_days (int): Number of days to look back
+            
+        Returns:
+            pd.DataFrame: Historical performance metrics for each pattern
+        """
+        performance_data = []
+        pattern_methods = self._get_safe_pattern_methods()
+        
+        # Calculate market environment metrics for context
+        market_volatility = self.df['Close'].pct_change().std() * np.sqrt(252)
+        market_trend = self._calculate_market_trend()
+        
+        for pattern_name, pattern_func in pattern_methods.items():
+            try:
+                signals = self._get_pattern_signals(pattern_name)
+                if signals is None:
+                    continue
+                    
+                if isinstance(signals, tuple):
+                    # Analyze bullish and bearish patterns separately
+                    for direction, signal in zip(['bullish', 'bearish'], signals):
+                        metrics = self._calculate_pattern_metrics(
+                            signal, pattern_name, direction, lookback_days)
+                        if metrics['occurrence_count'] >= min_occurrences:
+                            metrics.update({
+                                'market_volatility': market_volatility,
+                                'market_trend': market_trend
+                            })
+                            performance_data.append(metrics)
+                else:
+                    # Analyze neutral patterns
+                    metrics = self._calculate_pattern_metrics(
+                        signals, pattern_name, 'neutral', lookback_days)
+                    if metrics['occurrence_count'] >= min_occurrences:
+                        metrics.update({
+                            'market_volatility': market_volatility,
+                            'market_trend': market_trend
+                        })
+                        performance_data.append(metrics)
+                        
+            except Exception as e:
+                print(f"Error analyzing {pattern_name}: {str(e)}")
+                continue
+        
+        return pd.DataFrame(performance_data)
+
+    def _calculate_pattern_metrics(self,
+                                signal: pd.Series,
+                                pattern_name: str,
+                                direction: str,
+                                lookback_days: int) -> Dict[str, Any]:
+        """
+        Calculate performance metrics for a specific pattern
+        
+        Args:
+            signal (pd.Series): Pattern signal series
+            pattern_name (str): Name of the pattern
+            direction (str): Pattern direction
+            lookback_days (int): Analysis lookback period
+            
+        Returns:
+            Dict[str, Any]: Pattern performance metrics
+        """
+        lookback_start = self.df.index[-1] - pd.Timedelta(days=lookback_days)
+        pattern_occurrences = signal[signal > 0].index
+        pattern_occurrences = pattern_occurrences[pattern_occurrences >= lookback_start]
+        
+        if len(pattern_occurrences) == 0:
+            return {'pattern_name': pattern_name, 'occurrence_count': 0}
+            
+        returns = []
+        holding_periods = []
+        max_adverse_moves = []
+        max_favorable_moves = []
+        
+        for date in pattern_occurrences:
+            try:
+                metrics = self._calculate_trade_metrics(date, direction)
+                returns.append(metrics['return'])
+                holding_periods.append(metrics['holding_period'])
+                max_adverse_moves.append(metrics['max_adverse'])
+                max_favorable_moves.append(metrics['max_favorable'])
+            except Exception as e:
+                print(f"Error calculating metrics for {date}: {str(e)}")
+                continue
+        
+        return {
+            'pattern_name': pattern_name,
+            'direction': direction,
+            'occurrence_count': len(pattern_occurrences),
+            'avg_return': np.mean(returns) if returns else 0,
+            'win_rate': np.mean([r > 0 for r in returns]) if returns else 0,
+            'avg_holding_period': np.mean(holding_periods) if holding_periods else 0,
+            'avg_adverse_move': np.mean(max_adverse_moves) if max_adverse_moves else 0,
+            'avg_favorable_move': np.mean(max_favorable_moves) if max_favorable_moves else 0,
+            'sharpe_ratio': self._calculate_sharpe_ratio(returns) if returns else 0,
+            'profit_factor': self._calculate_profit_factor(returns) if returns else 0
+        }
+
     # def create_interactive_dashboard(self) -> go.Figure:
     #     """Create interactive dashboard with pattern filtering"""
     #     # Create subplot structure

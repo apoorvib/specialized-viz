@@ -937,6 +937,113 @@ class CandlestickVisualizer:
         fig.update_yaxes(title_text="Ratio", row=2, col=2)
         
         return fig
+    
+    def detect_failed_patterns(self, 
+                             lookback_period: int = 50,
+                             failure_threshold: float = 0.02) -> pd.DataFrame:
+        """
+        Identify failed pattern setups and their characteristics
+        
+        Args:
+            lookback_period (int): Period to analyze for failed patterns
+            failure_threshold (float): Price threshold for pattern failure
+            
+        Returns:
+            pd.DataFrame: Failed patterns with metadata
+        """
+        pattern_methods = self._get_safe_pattern_methods()
+        failed_patterns = []
+        
+        for pattern_name, pattern_func in pattern_methods.items():
+            try:
+                signals = self._get_pattern_signals(pattern_name)
+                if signals is None:
+                    continue
+                    
+                if isinstance(signals, tuple):
+                    # Handle bullish/bearish patterns
+                    for direction, signal in zip(['bullish', 'bearish'], signals):
+                        failed = self._analyze_pattern_failure(
+                            signal, 
+                            direction, 
+                            pattern_name,
+                            failure_threshold
+                        )
+                        failed_patterns.extend(failed)
+                else:
+                    # Handle neutral patterns
+                    failed = self._analyze_pattern_failure(
+                        signals,
+                        'neutral',
+                        pattern_name,
+                        failure_threshold
+                    )
+                    failed_patterns.extend(failed)
+                    
+            except Exception as e:
+                print(f"Error analyzing failures for {pattern_name}: {str(e)}")
+                continue
+        
+        if not failed_patterns:
+            return pd.DataFrame()
+            
+        return pd.DataFrame(failed_patterns)
+
+    def _analyze_pattern_failure(self,
+                               signal: pd.Series,
+                               direction: str,
+                               pattern_name: str,
+                               failure_threshold: float) -> List[Dict]:
+        """
+        Analyze individual pattern failures
+        
+        Args:
+            signal (pd.Series): Pattern signal series
+            direction (str): Pattern direction
+            pattern_name (str): Name of the pattern
+            failure_threshold (float): Threshold for failure
+            
+        Returns:
+            List[Dict]: List of failed pattern instances
+        """
+        failed_instances = []
+        
+        # Get signal occurrences
+        pattern_occurrences = signal[signal > 0].index
+        
+        for date in pattern_occurrences:
+            try:
+                # Get price data after pattern
+                idx = self.df.index.get_loc(date)
+                if idx + 10 >= len(self.df):  # Skip if too close to end
+                    continue
+                    
+                post_pattern_data = self.df.iloc[idx:idx+10]
+                
+                # Determine failure based on direction
+                failure = self._check_pattern_failure(
+                    post_pattern_data,
+                    direction,
+                    failure_threshold
+                )
+                
+                if failure['failed']:
+                    failed_instances.append({
+                        'date': date,
+                        'pattern': pattern_name,
+                        'direction': direction,
+                        'failure_type': failure['type'],
+                        'failure_magnitude': failure['magnitude'],
+                        'bars_to_failure': failure['bars']
+                    })
+                    
+            except Exception as e:
+                print(f"Error analyzing pattern at {date}: {str(e)}")
+                continue
+        
+        return failed_instances
+
+
     # def create_interactive_dashboard(self) -> go.Figure:
     #     """Create interactive dashboard with pattern filtering"""
     #     # Create subplot structure

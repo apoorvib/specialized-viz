@@ -1008,6 +1008,23 @@ class CandlestickVisualizer:
         
         return buttons
 
+    def _get_pattern_trace_indices(self, pattern_name: str) -> List[int]:
+        """
+        Get trace indices for a specific pattern
+        
+        Args:
+            pattern_name (str): Name of the pattern
+            
+        Returns:
+            List[int]: List of trace indices
+        """
+        indices = []
+        for i, trace in enumerate(self.fig.data):
+            if trace.name and pattern_name in trace.name:
+                indices.append(i)
+        return indices
+
+
 
     def _add_price_chart(self, fig: go.Figure, row: int, col: int) -> None:
         """Add main price chart with patterns to dashboard"""
@@ -1160,6 +1177,460 @@ class CandlestickVisualizer:
                 ),
                 row=row, col=col
             )
+
+    def add_volume_analysis(self, fig: go.Figure, row: int, col: int) -> go.Figure:
+        """
+        Add advanced volume analysis
+        
+        Args:
+            fig (go.Figure): Plotly figure
+            row (int): Subplot row
+            col (int): Subplot column
+            
+        Returns:
+            go.Figure: Updated figure with volume analysis
+        """
+        if 'Volume' not in self.df.columns:
+            return fig
+            
+        # Calculate volume metrics
+        volume_sma = self._calculate_sma(self.df['Volume'], 20)
+        volume_std = self.df['Volume'].rolling(window=20).std()
+        
+        # Identify high volume bars (> 2 standard deviations)
+        high_volume = self.df['Volume'] > (volume_sma + 2 * volume_std)
+        
+        # Color code volume bars
+        colors = self._get_volume_colors()
+        
+        # Add base volume bars
+        fig.add_trace(
+            go.Bar(
+                x=self.df.index,
+                y=self.df['Volume'],
+                marker_color=colors,
+                name='Volume',
+                opacity=0.7
+            ),
+            row=row, col=col
+        )
+        
+        # Highlight high volume bars
+        fig.add_trace(
+            go.Scatter(
+                x=self.df.index[high_volume],
+                y=self.df['Volume'][high_volume],
+                mode='markers',
+                marker=dict(
+                    symbol='diamond',
+                    size=8,
+                    color='red',
+                    line=dict(width=1)
+                ),
+                name='High Volume'
+            ),
+            row=row, col=col
+        )
+        
+        # Add volume moving average
+        fig.add_trace(
+            go.Scatter(
+                x=self.df.index,
+                y=volume_sma,
+                line=dict(color='rgba(0,0,0,0.5)', width=2),
+                name='Volume MA (20)'
+            ),
+            row=row, col=col
+        )
+        
+        return fig
+    
+    def add_price_channels(self, fig: go.Figure, period: int = 20) -> go.Figure:
+        """
+        Add price channels to the chart
+        
+        Args:
+            fig (go.Figure): Plotly figure
+            period (int): Channel period
+            
+        Returns:
+            go.Figure: Updated figure with price channels
+        """
+        # Calculate price channels
+        upper_channel = self.df['High'].rolling(window=period).max()
+        lower_channel = self.df['Low'].rolling(window=period).min()
+        
+        # Add upper channel
+        fig.add_trace(
+            go.Scatter(
+                x=self.df.index,
+                y=upper_channel,
+                mode='lines',
+                line=dict(color='rgba(0,255,0,0.3)', width=1),
+                name=f'Upper Channel ({period})',
+                fill=None
+            )
+        )
+        
+        # Add lower channel
+        fig.add_trace(
+            go.Scatter(
+                x=self.df.index,
+                y=lower_channel,
+                mode='lines',
+                line=dict(color='rgba(255,0,0,0.3)', width=1),
+                name=f'Lower Channel ({period})',
+                fill='tonexty'  # Fill area between channels
+            )
+        )
+        
+        return fig
+
+    def add_pivot_points(self, 
+                        fig: go.Figure, 
+                        method: str = 'standard') -> go.Figure:
+        """
+        Add pivot points to the chart
+        
+        Args:
+            fig (go.Figure): Plotly figure
+            method (str): Pivot point calculation method ('standard' or 'fibonacci')
+            
+        Returns:
+            go.Figure: Updated figure with pivot points
+        """
+        pivot_levels = self._calculate_pivot_points(method)
+        
+        colors = {
+            'P': 'black',
+            'R1': 'green',
+            'R2': 'darkgreen',
+            'R3': 'forestgreen',
+            'S1': 'red',
+            'S2': 'darkred',
+            'S3': 'maroon'
+        }
+        
+        for level_name, level_value in pivot_levels.items():
+            fig.add_trace(
+                go.Scatter(
+                    x=self.df.index,
+                    y=[level_value] * len(self.df),
+                    mode='lines',
+                    line=dict(
+                        color=colors[level_name],
+                        width=1,
+                        dash='dash'
+                    ),
+                    name=f'Pivot {level_name}'
+                )
+            )
+        
+        return fig
+
+    def _calculate_pivot_points(self, method: str = 'standard') -> Dict[str, float]:
+        """
+        Calculate pivot points
+        
+        Args:
+            method (str): Calculation method
+            
+        Returns:
+            Dict[str, float]: Dictionary of pivot levels
+        """
+        high = self.df['High'].iloc[-1]
+        low = self.df['Low'].iloc[-1]
+        close = self.df['Close'].iloc[-1]
+        
+        if method == 'standard':
+            pivot = (high + low + close) / 3
+            r1 = (2 * pivot) - low
+            r2 = pivot + (high - low)
+            r3 = high + 2 * (pivot - low)
+            s1 = (2 * pivot) - high
+            s2 = pivot - (high - low)
+            s3 = low - 2 * (high - pivot)
+        
+        elif method == 'fibonacci':
+            pivot = (high + low + close) / 3
+            r1 = pivot + 0.382 * (high - low)
+            r2 = pivot + 0.618 * (high - low)
+            r3 = pivot + 1.000 * (high - low)
+            s1 = pivot - 0.382 * (high - low)
+            s2 = pivot - 0.618 * (high - low)
+            s3 = pivot - 1.000 * (high - low)
+        
+        else:
+            raise ValueError(f"Unsupported pivot point method: {method}")
+        
+        return {
+            'P': pivot,
+            'R1': r1,
+            'R2': r2,
+            'R3': r3,
+            'S1': s1,
+            'S2': s2,
+            'S3': s3
+        }
+
+    def add_trend_analysis(self, fig: go.Figure) -> go.Figure:
+        """
+        Add comprehensive trend analysis to the chart
+        
+        Args:
+            fig (go.Figure): Plotly figure
+            
+        Returns:
+            go.Figure: Updated figure with trend analysis
+        """
+        # Calculate trend indicators
+        trends = self._calculate_trends()
+        
+        # Add trend lines
+        for trend in trends:
+            fig.add_trace(
+                go.Scatter(
+                    x=[trend['start_date'], trend['end_date']],
+                    y=[trend['start_price'], trend['end_price']],
+                    mode='lines',
+                    line=dict(
+                        color=self._get_trend_color(trend['strength']),
+                        width=2,
+                        dash='dot' if trend['type'] == 'minor' else 'solid'
+                    ),
+                    name=f"{trend['direction'].capitalize()} Trend"
+                )
+            )
+        
+        return fig
+
+    def _calculate_trends(self, 
+                        min_length: int = 5,
+                        swing_threshold: float = 0.02) -> List[Dict]:
+        """
+        Calculate major and minor trend lines
+        
+        Args:
+            min_length (int): Minimum number of bars for trend
+            swing_threshold (float): Minimum price movement for swing point
+            
+        Returns:
+            List[Dict]: List of trend information
+        """
+        trends = []
+        highs = self._find_swing_highs(threshold=swing_threshold)
+        lows = self._find_swing_lows(threshold=swing_threshold)
+        
+        # Combine swing points and sort by date
+        swing_points = pd.concat([
+            pd.Series(1, index=highs.index),
+            pd.Series(-1, index=lows.index)
+        ]).sort_index()
+        
+        # Identify trends between swing points
+        for i in range(len(swing_points) - 1):
+            start_idx = swing_points.index[i]
+            end_idx = swing_points.index[i + 1]
+            
+            if (end_idx - start_idx).days >= min_length:
+                start_price = self.df.loc[start_idx, 'Close']
+                end_price = self.df.loc[end_idx, 'Close']
+                price_change = (end_price - start_price) / start_price
+                
+                trend = {
+                    'start_date': start_idx,
+                    'end_date': end_idx,
+                    'start_price': start_price,
+                    'end_price': end_price,
+                    'direction': 'upward' if price_change > 0 else 'downward',
+                    'strength': abs(price_change),
+                    'type': 'major' if abs(price_change) > swing_threshold * 2 else 'minor'
+                }
+                
+                trends.append(trend)
+        
+        return trends
+
+    def _find_swing_highs(self, 
+                        window: int = 5, 
+                        threshold: float = 0.02) -> pd.Series:
+        """
+        Find swing high points in price data
+        
+        Args:
+            window (int): Window size for comparison
+            threshold (float): Minimum price movement threshold
+            
+        Returns:
+            pd.Series: Series of swing high prices
+        """
+        highs = pd.Series(index=self.df.index, dtype=float)
+        
+        for i in range(window, len(self.df) - window):
+            current_high = self.df['High'].iloc[i]
+            left_window = self.df['High'].iloc[i-window:i]
+            right_window = self.df['High'].iloc[i+1:i+window+1]
+            
+            if (current_high > left_window.max() and 
+                current_high > right_window.max() and
+                (current_high - min(left_window.min(), right_window.min())) / current_high > threshold):
+                highs.iloc[i] = current_high
+        
+        return highs.dropna()
+
+    def _find_swing_lows(self, 
+                        window: int = 5, 
+                        threshold: float = 0.02) -> pd.Series:
+        """
+        Find swing low points in price data
+        
+        Args:
+            window (int): Window size for comparison
+            threshold (float): Minimum price movement threshold
+            
+        Returns:
+            pd.Series: Series of swing low prices
+        """
+        lows = pd.Series(index=self.df.index, dtype=float)
+        
+        for i in range(window, len(self.df) - window):
+            current_low = self.df['Low'].iloc[i]
+            left_window = self.df['Low'].iloc[i-window:i]
+            right_window = self.df['Low'].iloc[i+1:i+window+1]
+            
+            if (current_low < left_window.min() and 
+                current_low < right_window.min() and
+                (max(left_window.max(), right_window.max()) - current_low) / current_low > threshold):
+                lows.iloc[i] = current_low
+        
+        return lows.dropna()
+
+    def _get_trend_color(self, strength: float) -> str:
+        """
+        Get color based on trend strength
+        
+        Args:
+            strength (float): Trend strength value
+            
+        Returns:
+            str: Color in rgba format
+        """
+        if strength > 0.1:
+            return f'rgba(0,255,0,{min(strength * 5, 1)})'
+        else:
+            return f'rgba(255,0,0,{min(strength * 5, 1)})'
+
+    def add_pattern_annotations(self, 
+                            fig: go.Figure, 
+                            min_probability: float = 0.7) -> go.Figure:
+        """
+        Add pattern annotations to the chart
+        
+        Args:
+            fig (go.Figure): Plotly figure
+            min_probability (float): Minimum pattern probability threshold
+            
+        Returns:
+            go.Figure: Updated figure with pattern annotations
+        """
+        patterns = self._identify_probable_patterns(min_probability)
+        
+        for pattern in patterns:
+            # Add pattern shape
+            fig.add_shape(
+                type='rect',
+                x0=pattern['start_date'],
+                x1=pattern['end_date'],
+                y0=pattern['low_price'] * 0.99,
+                y1=pattern['high_price'] * 1.01,
+                line=dict(
+                    color=self._get_pattern_color(pattern),
+                    width=1,
+                    dash='dash'
+                ),
+                fillcolor=self._get_pattern_color(pattern, alpha=0.1)
+            )
+            
+            # Add annotation
+            fig.add_annotation(
+                x=pattern['end_date'],
+                y=pattern['high_price'] * 1.02,
+                text=f"{pattern['name']} ({pattern['probability']:.0%})",
+                showarrow=True,
+                arrowhead=2,
+                arrowsize=1,
+                arrowwidth=1,
+                arrowcolor=self._get_pattern_color(pattern)
+            )
+        
+        return fig
+
+    def _identify_probable_patterns(self, 
+                                min_probability: float = 0.7) -> List[Dict]:
+        """
+        Identify patterns with high probability
+        
+        Args:
+            min_probability (float): Minimum pattern probability threshold
+            
+        Returns:
+            List[Dict]: List of identified patterns with metadata
+        """
+        patterns = []
+        pattern_methods = self._get_safe_pattern_methods()
+        
+        for pattern_name, pattern_func in pattern_methods.items():
+            try:
+                signals = self._get_pattern_signals(pattern_name)
+                if signals is not None:
+                    if isinstance(signals, tuple):
+                        bullish, bearish = signals
+                        self._add_pattern_metadata(
+                            patterns, pattern_name, 'bullish', bullish, min_probability)
+                        self._add_pattern_metadata(
+                            patterns, pattern_name, 'bearish', bearish, min_probability)
+                    else:
+                        self._add_pattern_metadata(
+                            patterns, pattern_name, 'neutral', signals, min_probability)
+            except Exception as e:
+                print(f"Error identifying pattern {pattern_name}: {str(e)}")
+        
+        return patterns
+
+    def _add_pattern_metadata(self,
+                            patterns: List[Dict],
+                            pattern_name: str,
+                            direction: str,
+                            signals: pd.Series,
+                            min_probability: float) -> None:
+        """
+        Add pattern metadata to patterns list
+        
+        Args:
+            patterns (List[Dict]): List to append pattern metadata
+            pattern_name (str): Name of the pattern
+            direction (str): Pattern direction
+            signals (pd.Series): Pattern signals
+            min_probability (float): Minimum probability threshold
+        """
+        if not signals.any():
+            return
+            
+        for idx in signals[signals].index:
+            window = slice(max(0, idx-5), min(len(self.df), idx+5))
+            pattern = {
+                'name': f"{pattern_name} ({direction})",
+                'start_date': self.df.index[window.start],
+                'end_date': self.df.index[window.stop - 1],
+                'high_price': self.df['High'].iloc[window].max(),
+                'low_price': self.df['Low'].iloc[window].min(),
+                'probability': self._calculate_pattern_probability(
+                    pattern_name, direction, idx),
+                'direction': direction
+            }
+            
+            if pattern['probability'] >= min_probability:
+                patterns.append(pattern)
 
     def _add_volume_profile(self, fig: go.Figure, row: int, col: int) -> None:
         """Add volume profile with analysis"""
@@ -1695,6 +2166,119 @@ class CandlestickVisualizer:
         confirmation['ATR_Ratio'] = atr / atr.rolling(20).mean()
         
         return confirmation
+
+    def _calculate_atr(self, df: pd.DataFrame, window: int = 14) -> pd.Series:
+        """
+        Calculate Average True Range
+        
+        Args:
+            df (pd.DataFrame): OHLC data
+            window (int): Calculation window
+            
+        Returns:
+            pd.Series: ATR values
+        """
+        high = df['High']
+        low = df['Low']
+        close = df['Close']
+        
+        # Calculate True Range
+        tr1 = high - low
+        tr2 = abs(high - close.shift())
+        tr3 = abs(low - close.shift())
+        
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        
+        # Calculate ATR
+        atr = tr.rolling(window=window).mean()
+        
+        return atr
+    
+    def add_technical_overlay(self, 
+                         indicator_name: str, 
+                         params: Dict[str, Any] = None) -> pd.Series:
+        """
+        Add technical indicator overlay
+        
+        Args:
+            indicator_name (str): Name of the indicator
+            params (Dict[str, Any]): Indicator parameters
+            
+        Returns:
+            pd.Series: Indicator values
+            
+        Raises:
+            ValueError: If indicator is not supported
+        """
+        params = params or {}
+        
+        indicator_functions = {
+            'sma': self._calculate_sma,
+            'ema': self._calculate_ema,
+            'bollinger_bands': self._calculate_bollinger_bands,
+            'rsi': self._calculate_rsi,
+            'macd': self._calculate_macd,
+            'atr': self._calculate_atr
+        }
+        
+        if indicator_name not in indicator_functions:
+            raise ValueError(f"Unsupported indicator: {indicator_name}")
+            
+        return indicator_functions[indicator_name](self.df['Close'], **params)
+
+    def _calculate_sma(self, prices: pd.Series, period: int = 20) -> pd.Series:
+        """
+        Calculate Simple Moving Average
+        
+        Args:
+            prices (pd.Series): Price data
+            period (int): Moving average period
+            
+        Returns:
+            pd.Series: SMA values
+        """
+        return prices.rolling(window=period).mean()
+
+    def _calculate_ema(self, prices: pd.Series, period: int = 20) -> pd.Series:
+        """
+        Calculate Exponential Moving Average
+        
+        Args:
+            prices (pd.Series): Price data
+            period (int): Moving average period
+            
+        Returns:
+            pd.Series: EMA values
+        """
+        return prices.ewm(span=period, adjust=False).mean()
+
+    def _calculate_bollinger_bands(self, 
+                                prices: pd.Series, 
+                                period: int = 20, 
+                                std_dev: float = 2.0) -> Dict[str, pd.Series]:
+        """
+        Calculate Bollinger Bands
+        
+        Args:
+            prices (pd.Series): Price data
+            period (int): Moving average period
+            std_dev (float): Number of standard deviations
+            
+        Returns:
+            Dict[str, pd.Series]: Dictionary containing upper, middle, and lower bands
+        """
+        middle_band = self._calculate_sma(prices, period)
+        rolling_std = prices.rolling(window=period).std()
+        
+        upper_band = middle_band + (rolling_std * std_dev)
+        lower_band = middle_band - (rolling_std * std_dev)
+        
+        return {
+            'upper': upper_band,
+            'middle': middle_band,
+            'lower': lower_band
+        }
+
 
     def add_pattern_significance(self, confidence_level: float = 0.95) -> pd.DataFrame:
         """

@@ -2457,3 +2457,243 @@ class CandlestickVisualizer:
             if name.startswith('detect_'):
                 pattern_methods[name.replace('detect_', '')] = method
         return pattern_methods
+
+class PatternQualityMetrics:
+    """Helper class for pattern quality assessment"""
+    def __init__(self, min_quality_score: float = 0.6):
+        self.min_quality_score = min_quality_score
+        self.quality_weights = {
+            'volume_confirmation': 0.25,
+            'price_momentum': 0.20,
+            'pattern_symmetry': 0.15,
+            'trend_alignment': 0.20,
+            'support_resistance': 0.20
+        }
+
+    def analyze_pattern_quality(self, 
+                            pattern: Dict[str, Any],
+                            window: int = 20) -> Dict[str, float]:
+        """
+        Analyze the quality of detected patterns
+        
+        Args:
+            pattern (Dict[str, Any]): Pattern information
+            window (int): Analysis window size
+            
+        Returns:
+            Dict[str, float]: Quality metrics
+        """
+        pattern_start = self.df.index.get_loc(pattern['start_date'])
+        pattern_end = self.df.index.get_loc(pattern['end_date'])
+        pattern_slice = slice(max(0, pattern_start - window), min(len(self.df), pattern_end + window))
+        
+        # Calculate quality metrics
+        quality_metrics = {
+            'volume_confirmation': self._check_volume_confirmation(pattern_slice),
+            'price_momentum': self._check_price_momentum(pattern_slice),
+            'pattern_symmetry': self._check_pattern_symmetry(pattern),
+            'trend_alignment': self._check_trend_alignment(pattern),
+            'support_resistance': self._check_support_resistance(pattern)
+        }
+        
+        # Calculate overall quality score
+        quality_score = sum(
+            metric * self.quality_weights[name]
+            for name, metric in quality_metrics.items()
+        )
+        
+        quality_metrics['overall_score'] = quality_score
+        return quality_metrics
+
+    def _check_volume_confirmation(self, pattern_slice: slice) -> float:
+        """
+        Check volume confirmation for pattern
+        
+        Args:
+            pattern_slice (slice): Time slice for pattern
+            
+        Returns:
+            float: Volume confirmation score
+        """
+        if 'Volume' not in self.df.columns:
+            return 0.5
+            
+        volume_data = self.df['Volume'].iloc[pattern_slice]
+        avg_volume = volume_data.mean()
+        recent_volume = volume_data.iloc[-5:].mean()
+        
+        volume_ratio = recent_volume / avg_volume
+        return min(volume_ratio, 1.0) if volume_ratio > 1 else volume_ratio
+
+    def _check_price_momentum(self, pattern_slice: slice) -> float:
+        """
+        Check price momentum during pattern formation
+        
+        Args:
+            pattern_slice (slice): Time slice for pattern
+            
+        Returns:
+            float: Momentum confirmation score
+        """
+        price_data = self.df['Close'].iloc[pattern_slice]
+        
+        # Calculate RSI and MACD
+        rsi = self._calculate_rsi(price_data)
+        macd, signal = self._calculate_macd_with_signal(price_data)
+        
+        # Check momentum alignment
+        rsi_score = abs(rsi.iloc[-1] - 50) / 50
+        macd_score = 1 if (macd.iloc[-1] > signal.iloc[-1]) else 0
+        
+        return (rsi_score + macd_score) / 2
+
+    def _check_pattern_symmetry(self, pattern: Dict[str, Any]) -> float:
+        """
+        Check symmetry of pattern formation
+        
+        Args:
+            pattern (Dict[str, Any]): Pattern information
+            
+        Returns:
+            float: Symmetry score
+        """
+        pattern_prices = self.df['Close'].loc[pattern['start_date']:pattern['end_date']]
+        
+        if len(pattern_prices) < 4:
+            return 0.5
+            
+        # Split pattern into two halves
+        mid_point = len(pattern_prices) // 2
+        first_half = pattern_prices.iloc[:mid_point]
+        second_half = pattern_prices.iloc[mid_point:]
+        
+        # Calculate symmetry based on price movements
+        first_move = abs(first_half.max() - first_half.min())
+        second_move = abs(second_half.max() - second_half.min())
+        
+        symmetry_ratio = min(first_move, second_move) / max(first_move, second_move)
+        return symmetry_ratio
+
+    def analyze_pattern_confluence(self, 
+                                timeframe: str = 'daily',
+                                min_confidence: float = 0.7) -> List[Dict]:
+        """
+        Analyze pattern confluence across different indicators
+        
+        Args:
+            timeframe (str): Analysis timeframe
+            min_confidence (float): Minimum confidence threshold
+            
+        Returns:
+            List[Dict]: Confluence points with metadata
+        """
+        confluence_points = []
+        
+        # Get all active patterns
+        patterns = self._identify_probable_patterns(min_confidence)
+        
+        for pattern in patterns:
+            # Check technical indicator confluence
+            indicator_confluence = self._check_indicator_confluence(pattern)
+            
+            # Check support/resistance confluence
+            sr_confluence = self._check_sr_confluence(pattern)
+            
+            # Check trend confluence
+            trend_confluence = self._check_trend_confluence(pattern)
+            
+            # Calculate overall confluence score
+            confluence_score = (
+                indicator_confluence * 0.4 +
+                sr_confluence * 0.3 +
+                trend_confluence * 0.3
+            )
+            
+            if confluence_score >= min_confidence:
+                confluence_points.append({
+                    'pattern': pattern['name'],
+                    'date': pattern['end_date'],
+                    'score': confluence_score,
+                    'indicators': indicator_confluence,
+                    'support_resistance': sr_confluence,
+                    'trend': trend_confluence
+                })
+        
+        return confluence_points
+
+    def _check_indicator_confluence(self, pattern: Dict[str, Any]) -> float:
+        """
+        Check confluence with technical indicators
+        
+        Args:
+            pattern (Dict[str, Any]): Pattern information
+            
+        Returns:
+            float: Indicator confluence score
+        """
+        pattern_end = self.df.index.get_loc(pattern['end_date'])
+        
+        # Calculate various indicators
+        sma_20 = self._calculate_sma(self.df['Close'], 20)
+        sma_50 = self._calculate_sma(self.df['Close'], 50)
+        rsi = self._calculate_rsi(self.df['Close'])
+        macd, signal = self._calculate_macd_with_signal(self.df['Close'])
+        
+        # Check indicator alignments
+        alignments = [
+            sma_20.iloc[pattern_end] > sma_50.iloc[pattern_end],
+            rsi.iloc[pattern_end] > 50 if pattern['direction'] == 'bullish' else rsi.iloc[pattern_end] < 50,
+            macd.iloc[pattern_end] > signal.iloc[pattern_end] if pattern['direction'] == 'bullish' 
+            else macd.iloc[pattern_end] < signal.iloc[pattern_end]
+        ]
+        
+        return sum(alignments) / len(alignments)
+
+    def _check_sr_confluence(self, pattern: Dict[str, Any]) -> float:
+        """
+        Check confluence with support and resistance levels
+        
+        Args:
+            pattern (Dict[str, Any]): Pattern information
+            
+        Returns:
+            float: Support/resistance confluence score
+        """
+        # Calculate key price levels
+        price_levels = self._identify_key_levels(window=50)
+        pattern_price = self.df['Close'].loc[pattern['end_date']]
+        
+        # Find closest levels
+        distances = [abs(level - pattern_price) / pattern_price for level in price_levels]
+        min_distance = min(distances) if distances else 1.0
+        
+        return 1 - min(min_distance, 1.0)
+
+    def _check_trend_confluence(self, pattern: Dict[str, Any]) -> float:
+        """
+        Check confluence with existing trends
+        
+        Args:
+            pattern (Dict[str, Any]): Pattern information
+            
+        Returns:
+            float: Trend confluence score
+        """
+        trends = self._calculate_trends()
+        
+        # Find active trend at pattern end
+        active_trends = [
+            trend for trend in trends
+            if trend['start_date'] <= pattern['end_date'] <= trend['end_date']
+        ]
+        
+        if not active_trends:
+            return 0.5
+            
+        # Check if pattern aligns with trend direction
+        trend_alignment = sum(
+            1 for trend in active_trends
+            if trend['direction'] == pattern['direction']
+        ) / len(active_trends)
+        
+        return trend_alignment

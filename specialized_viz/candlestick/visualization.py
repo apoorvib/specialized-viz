@@ -2697,3 +2697,569 @@ class PatternQualityMetrics:
         ) / len(active_trends)
         
         return trend_alignment
+    
+class MarketRegime:
+    """
+    Represents a market regime with its characteristics
+    """
+    def __init__(self, 
+                 regime_type: str,
+                 volatility: str,
+                 trend: str,
+                 volume: str,
+                 start_date: pd.Timestamp,
+                 end_date: pd.Timestamp,
+                 confidence: float):
+        self.regime_type = regime_type  # e.g., 'trending', 'ranging', 'transitioning'
+        self.volatility = volatility    # e.g., 'high', 'medium', 'low'
+        self.trend = trend              # e.g., 'bullish', 'bearish', 'neutral'
+        self.volume = volume            # e.g., 'increasing', 'decreasing', 'stable'
+        self.start_date = start_date
+        self.end_date = end_date
+        self.confidence = confidence
+
+    def analyze_market_regime(self, 
+                            window_size: int = 20,
+                            volatility_window: int = 20,
+                            trend_window: int = 50) -> List[MarketRegime]:
+        """
+        Analyze and identify market regimes
+        
+        Args:
+            window_size (int): Base window for regime analysis
+            volatility_window (int): Window for volatility calculations
+            trend_window (int): Window for trend analysis
+            
+        Returns:
+            List[MarketRegime]: List of identified market regimes
+        """
+        # Initialize result list
+        regimes = []
+        
+        try:
+            # Calculate regime components
+            volatility = self._calculate_volatility_regime(volatility_window)
+            trend = self._calculate_trend_regime(trend_window)
+            volume = self._calculate_volume_regime(window_size)
+            
+            # Combine components to identify regime changes
+            regime_changes = self._identify_regime_changes(
+                volatility=volatility,
+                trend=trend,
+                volume=volume,
+                window_size=window_size
+            )
+            
+            # Create MarketRegime objects for each identified period
+            current_regime = None
+            for i, (date, regime_data) in enumerate(regime_changes.items()):
+                if current_regime is None:
+                    current_regime = {
+                        'start_date': date,
+                        'regime_data': regime_data
+                    }
+                else:
+                    # Check if regime has changed significantly
+                    if self._is_regime_change(current_regime['regime_data'], regime_data):
+                        # Create regime object for the completed period
+                        regime = MarketRegime(
+                            regime_type=self._determine_regime_type(current_regime['regime_data']),
+                            volatility=current_regime['regime_data']['volatility'],
+                            trend=current_regime['regime_data']['trend'],
+                            volume=current_regime['regime_data']['volume'],
+                            start_date=current_regime['start_date'],
+                            end_date=date,
+                            confidence=self._calculate_regime_confidence(current_regime['regime_data'])
+                        )
+                        regimes.append(regime)
+                        
+                        # Start new regime
+                        current_regime = {
+                            'start_date': date,
+                            'regime_data': regime_data
+                        }
+            
+            # Add final regime if exists
+            if current_regime is not None:
+                regime = MarketRegime(
+                    regime_type=self._determine_regime_type(current_regime['regime_data']),
+                    volatility=current_regime['regime_data']['volatility'],
+                    trend=current_regime['regime_data']['trend'],
+                    volume=current_regime['regime_data']['volume'],
+                    start_date=current_regime['start_date'],
+                    end_date=self.df.index[-1],
+                    confidence=self._calculate_regime_confidence(current_regime['regime_data'])
+                )
+                regimes.append(regime)
+            
+            return regimes
+            
+        except Exception as e:
+            print(f"Error in market regime analysis: {str(e)}")
+            return []
+
+    def _calculate_volatility_regime(self, window: int) -> pd.Series:
+        """
+        Calculate volatility regime
+        
+        Args:
+            window (int): Calculation window
+            
+        Returns:
+            pd.Series: Volatility regime classifications
+        """
+        # Calculate daily returns
+        returns = self.df['Close'].pct_change()
+        
+        # Calculate rolling volatility
+        volatility = returns.rolling(window=window).std() * np.sqrt(252)  # Annualized
+        
+        # Classify volatility regimes
+        vol_quantiles = volatility.quantile([0.33, 0.66])
+        
+        def classify_volatility(x):
+            if pd.isna(x):
+                return 'unknown'
+            elif x <= vol_quantiles[0.33]:
+                return 'low'
+            elif x <= vol_quantiles[0.66]:
+                return 'medium'
+            else:
+                return 'high'
+        
+        return volatility.apply(classify_volatility)
+
+    def _calculate_trend_regime(self, window: int) -> pd.Series:
+        """
+        Calculate trend regime
+        
+        Args:
+            window (int): Calculation window
+            
+        Returns:
+            pd.Series: Trend regime classifications
+        """
+        # Calculate moving averages
+        sma_short = self.df['Close'].rolling(window=window//2).mean()
+        sma_long = self.df['Close'].rolling(window=window).mean()
+        
+        # Calculate trend direction
+        trend = pd.Series(index=self.df.index, dtype=str)
+        
+        for i in range(len(self.df)):
+            if pd.isna(sma_short.iloc[i]) or pd.isna(sma_long.iloc[i]):
+                trend.iloc[i] = 'unknown'
+            else:
+                # Calculate trend strength
+                price_to_sma = self.df['Close'].iloc[i] / sma_long.iloc[i] - 1
+                
+                if sma_short.iloc[i] > sma_long.iloc[i]:
+                    trend.iloc[i] = 'bullish' if abs(price_to_sma) > 0.02 else 'weak_bullish'
+                elif sma_short.iloc[i] < sma_long.iloc[i]:
+                    trend.iloc[i] = 'bearish' if abs(price_to_sma) > 0.02 else 'weak_bearish'
+                else:
+                    trend.iloc[i] = 'neutral'
+        
+        return trend
+    
+    def _calculate_volume_regime(self, window: int) -> pd.Series:
+        """
+        Calculate volume regime
+        
+        Args:
+            window (int): Calculation window
+            
+        Returns:
+            pd.Series: Volume regime classifications
+        """
+        if 'Volume' not in self.df.columns:
+            return pd.Series('unknown', index=self.df.index)
+        
+        # Calculate volume metrics
+        volume = self.df['Volume']
+        volume_ma = volume.rolling(window=window).mean()
+        volume_std = volume.rolling(window=window).std()
+        
+        # Calculate relative volume
+        relative_volume = volume / volume_ma
+        
+        # Classify volume regimes
+        volume_regime = pd.Series(index=self.df.index, dtype=str)
+        
+        for i in range(len(self.df)):
+            if pd.isna(relative_volume.iloc[i]):
+                volume_regime.iloc[i] = 'unknown'
+            else:
+                if relative_volume.iloc[i] > 1.5:
+                    volume_regime.iloc[i] = 'very_high'
+                elif relative_volume.iloc[i] > 1.1:
+                    volume_regime.iloc[i] = 'high'
+                elif relative_volume.iloc[i] > 0.9:
+                    volume_regime.iloc[i] = 'normal'
+                elif relative_volume.iloc[i] > 0.5:
+                    volume_regime.iloc[i] = 'low'
+                else:
+                    volume_regime.iloc[i] = 'very_low'
+        
+        return volume_regime
+
+    def _identify_regime_changes(self,
+                            volatility: pd.Series,
+                            trend: pd.Series,
+                            volume: pd.Series,
+                            window_size: int) -> Dict[pd.Timestamp, Dict]:
+        """
+        Identify points where market regime changes
+        
+        Args:
+            volatility (pd.Series): Volatility regime series
+            trend (pd.Series): Trend regime series
+            volume (pd.Series): Volume regime series
+            window_size (int): Window for change detection
+            
+        Returns:
+            Dict[pd.Timestamp, Dict]: Dictionary of regime changes with metadata
+        """
+        regime_changes = {}
+        
+        # Combine all regime components
+        for i in range(len(self.df)):
+            current_date = self.df.index[i]
+            
+            # Get current regime characteristics
+            current_regime = {
+                'volatility': volatility.iloc[i],
+                'trend': trend.iloc[i],
+                'volume': volume.iloc[i],
+                'momentum': self._calculate_momentum_regime(i),
+                'support_resistance': self._calculate_sr_regime(i)
+            }
+            
+            # Check if this represents a regime change
+            if i > 0:
+                prev_regime = regime_changes.get(self.df.index[i-1], None)
+                if prev_regime is None or self._is_significant_change(prev_regime, current_regime):
+                    regime_changes[current_date] = current_regime
+            else:
+                regime_changes[current_date] = current_regime
+        
+        return regime_changes
+
+    def _calculate_momentum_regime(self, index: int) -> str:
+        """
+        Calculate momentum regime for a specific index
+        
+        Args:
+            index (int): Data index
+            
+        Returns:
+            str: Momentum regime classification
+        """
+        try:
+            # Calculate RSI
+            rsi = self._calculate_rsi(self.df['Close'])
+            current_rsi = rsi.iloc[index]
+            
+            # Calculate MACD
+            macd, signal = self._calculate_macd_with_signal(self.df['Close'])
+            current_macd = macd.iloc[index]
+            current_signal = signal.iloc[index]
+            
+            # Determine momentum regime
+            if pd.isna(current_rsi) or pd.isna(current_macd):
+                return 'unknown'
+                
+            if current_rsi > 70 and current_macd > current_signal:
+                return 'strong_bullish'
+            elif current_rsi < 30 and current_macd < current_signal:
+                return 'strong_bearish'
+            elif current_rsi > 60:
+                return 'bullish'
+            elif current_rsi < 40:
+                return 'bearish'
+            else:
+                return 'neutral'
+                
+        except Exception as e:
+            print(f"Error calculating momentum regime: {str(e)}")
+            return 'unknown'
+
+    def _calculate_sr_regime(self, index: int, window: int = 20) -> str:
+        """
+        Calculate support/resistance regime for a specific index
+        
+        Args:
+            index (int): Data index
+            window (int): Lookback window
+            
+        Returns:
+            str: Support/resistance regime classification
+        """
+        try:
+            # Get relevant price data
+            start_idx = max(0, index - window)
+            price_window = self.df['Close'].iloc[start_idx:index+1]
+            current_price = price_window.iloc[-1]
+            
+            # Calculate support and resistance levels
+            support_levels = self._identify_support_levels(price_window)
+            resistance_levels = self._identify_resistance_levels(price_window)
+            
+            # Find closest levels
+            closest_support = min((abs(level - current_price), level) 
+                                for level in support_levels)[1]
+            closest_resistance = min((abs(level - current_price), level) 
+                                for level in resistance_levels)[1]
+            
+            # Calculate distances as percentages
+            support_distance = (current_price - closest_support) / current_price
+            resistance_distance = (closest_resistance - current_price) / current_price
+            
+            # Determine regime
+            if support_distance < 0.01 and resistance_distance < 0.01:
+                return 'compression'
+            elif support_distance < 0.01:
+                return 'at_support'
+            elif resistance_distance < 0.01:
+                return 'at_resistance'
+            elif support_distance < resistance_distance:
+                return 'near_support'
+            else:
+                return 'near_resistance'
+                
+        except Exception as e:
+            print(f"Error calculating S/R regime: {str(e)}")
+            return 'unknown'
+
+    def _is_significant_change(self, 
+                            prev_regime: Dict[str, str], 
+                            current_regime: Dict[str, str]) -> bool:
+        """
+        Determine if regime change is significant
+        
+        Args:
+            prev_regime (Dict[str, str]): Previous regime characteristics
+            current_regime (Dict[str, str]): Current regime characteristics
+            
+        Returns:
+            bool: True if change is significant
+        """
+        # Define weights for different components
+        weights = {
+            'trend': 0.35,
+            'volatility': 0.25,
+            'momentum': 0.20,
+            'volume': 0.10,
+            'support_resistance': 0.10
+        }
+        
+        # Calculate change score
+        change_score = 0
+        for component, weight in weights.items():
+            if prev_regime[component] != current_regime[component]:
+                change_score += weight
+        
+        return change_score >= 0.4  # Threshold for significant change
+    
+    def visualize_market_regimes(self, regimes: List[MarketRegime]) -> go.Figure:
+        """
+        Create visualization of market regimes
+        
+        Args:
+            regimes (List[MarketRegime]): List of identified market regimes
+            
+        Returns:
+            go.Figure: Plotly figure with regime visualization
+        """
+        # Create subplot structure
+        fig = make_subplots(
+            rows=3, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.05,
+            subplot_titles=(
+                'Price with Regime Overlay',
+                'Regime Characteristics',
+                'Regime Confidence'
+            ),
+            row_heights=[0.5, 0.3, 0.2]
+        )
+        
+        # Add price chart
+        fig.add_trace(
+            go.Candlestick(
+                x=self.df.index,
+                open=self.df['Open'],
+                high=self.df['High'],
+                low=self.df['Low'],
+                close=self.df['Close'],
+                name='Price'
+            ),
+            row=1, col=1
+        )
+        
+        # Add regime overlays
+        for regime in regimes:
+            # Add regime background
+            fig.add_vrect(
+                x0=regime.start_date,
+                x1=regime.end_date,
+                fillcolor=self._get_regime_color(regime.regime_type),
+                opacity=0.2,
+                layer="below",
+                line_width=0,
+                row=1, col=1
+            )
+            
+            # Add regime characteristics
+            self._add_regime_characteristics(fig, regime, row=2, col=1)
+            
+            # Add confidence indicator
+            fig.add_trace(
+                go.Scatter(
+                    x=[regime.start_date, regime.end_date],
+                    y=[regime.confidence, regime.confidence],
+                    mode='lines',
+                    line=dict(
+                        color=self._get_regime_color(regime.regime_type),
+                        width=2
+                    ),
+                    name=f'Confidence ({regime.regime_type})'
+                ),
+                row=3, col=1
+            )
+        
+        # Update layout
+        fig.update_layout(
+            height=800,
+            showlegend=True,
+            title_text="Market Regime Analysis",
+            xaxis_rangeslider_visible=False
+        )
+        
+        return fig
+
+    def _get_regime_color(self, regime_type: str) -> str:
+        """
+        Get color for regime visualization
+        
+        Args:
+            regime_type (str): Type of market regime
+            
+        Returns:
+            str: Color code for regime
+        """
+        color_map = {
+            'trending': 'rgba(46, 204, 113, 0.8)',
+            'ranging': 'rgba(52, 152, 219, 0.8)',
+            'transitioning': 'rgba(155, 89, 182, 0.8)',
+            'volatile': 'rgba(231, 76, 60, 0.8)',
+            'consolidating': 'rgba(241, 196, 15, 0.8)'
+        }
+        
+        return color_map.get(regime_type, 'rgba(149, 165, 166, 0.8)')
+
+    def _add_regime_characteristics(self, 
+                                fig: go.Figure, 
+                                regime: MarketRegime,
+                                row: int,
+                                col: int) -> None:
+        """
+        Add regime characteristics visualization
+        
+        Args:
+            fig (go.Figure): Plotly figure
+            regime (MarketRegime): Market regime object
+            row (int): Subplot row
+            col (int): Subplot column
+        """
+        # Create characteristic indicators
+        characteristics = {
+            'Volatility': self._normalize_regime_value(regime.volatility),
+            'Trend': self._normalize_regime_value(regime.trend),
+            'Volume': self._normalize_regime_value(regime.volume)
+        }
+        
+        # Add characteristics as stacked bars
+        for i, (char_name, value) in enumerate(characteristics.items()):
+            fig.add_trace(
+                go.Bar(
+                    x=[[regime.start_date, regime.end_date]],
+                    y=[value],
+                    name=f'{char_name} ({regime.regime_type})',
+                    marker_color=self._get_characteristic_color(char_name, value),
+                    showlegend=False
+                ),
+                row=row, col=col
+            )
+
+    def _normalize_regime_value(self, regime_value: str) -> float:
+        """
+        Normalize regime characteristic values for visualization
+        
+        Args:
+            regime_value (str): Regime characteristic value
+            
+        Returns:
+            float: Normalized value between 0 and 1
+        """
+        value_maps = {
+            'volatility': {
+                'low': 0.2,
+                'medium': 0.5,
+                'high': 0.8,
+                'very_high': 1.0
+            },
+            'trend': {
+                'strong_bearish': 0.0,
+                'bearish': 0.2,
+                'weak_bearish': 0.4,
+                'neutral': 0.5,
+                'weak_bullish': 0.6,
+                'bullish': 0.8,
+                'strong_bullish': 1.0
+            },
+            'volume': {
+                'very_low': 0.0,
+                'low': 0.25,
+                'normal': 0.5,
+                'high': 0.75,
+                'very_high': 1.0
+            }
+        }
+        
+        # Try to match the regime value with each map
+        for map_type, value_map in value_maps.items():
+            if regime_value.lower() in value_map:
+                return value_map[regime_value.lower()]
+        
+        return 0.5  # Default value if no match found
+
+    def _get_characteristic_color(self, characteristic: str, value: float) -> str:
+        """
+        Get color for regime characteristic visualization
+        
+        Args:
+            characteristic (str): Name of characteristic
+            value (float): Normalized value
+            
+        Returns:
+            str: Color code for characteristic
+        """
+        color_scales = {
+            'Volatility': [
+                [0, 'rgba(46, 204, 113, 0.8)'],  # Green for low volatility
+                [1, 'rgba(231, 76, 60, 0.8)']    # Red for high volatility
+            ],
+            'Trend': [
+                [0, 'rgba(231, 76, 60, 0.8)'],   # Red for bearish
+                [0.5, 'rgba(149, 165, 166, 0.8)'], # Gray for neutral
+                [1, 'rgba(46, 204, 113, 0.8)']    # Green for bullish
+            ],
+            'Volume': [
+                [0, 'rgba(149, 165, 166, 0.8)'],  # Gray for low volume
+                [1, 'rgba(52, 152, 219, 0.8)']    # Blue for high volume
+            ]
+        }
+        
+        scale = color_scales.get(characteristic, color_scales['Volume'])
+        return self._interpolate_color(value, scale)

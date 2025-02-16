@@ -973,6 +973,42 @@ class CandlestickVisualizer:
         except Exception as e:
             raise ValueError(f"Failed to create dashboard: {str(e)}")
 
+    def _create_pattern_filter_buttons(self) -> List[Dict]:
+        """
+        Create buttons for pattern filtering
+        
+        Returns:
+            List[Dict]: List of button configurations
+        """
+        buttons = [{
+            'label': 'All Patterns',
+            'method': 'update',
+            'args': [{
+                'visible': [True] * len(self.fig.data)
+            }]
+        }]
+        
+        pattern_methods = self._get_safe_pattern_methods()
+        base_traces = 2  # Candlestick and volume are always visible
+        
+        for pattern_name in pattern_methods:
+            visibility = [i < base_traces for i in range(len(self.fig.data))]
+            pattern_traces = self._get_pattern_trace_indices(pattern_name)
+            
+            for idx in pattern_traces:
+                visibility[idx] = True
+                
+            buttons.append({
+                'label': pattern_name.replace('_', ' ').title(),
+                'method': 'update',
+                'args': [{
+                    'visible': visibility
+                }]
+            })
+        
+        return buttons
+
+
     def _add_price_chart(self, fig: go.Figure, row: int, col: int) -> None:
         """Add main price chart with patterns to dashboard"""
         # Add candlestick chart
@@ -998,6 +1034,112 @@ class CandlestickVisualizer:
                     self._add_pattern_markers(fig, signals, pattern_name, row, col)
             except Exception as e:
                 print(f"Error adding pattern {pattern_name}: {str(e)}")
+
+
+
+    def _add_pattern_markers(self, 
+                            fig: go.Figure, 
+                            signals: Union[pd.Series, Tuple[pd.Series, pd.Series]], 
+                            pattern_name: str,
+                            row: int,
+                            col: int) -> None:
+        """
+        Add pattern markers to the chart
+        
+        Args:
+            fig (go.Figure): Plotly figure
+            signals: Pattern signals
+            pattern_name (str): Name of the pattern
+            row (int): Subplot row
+            col (int): Subplot column
+        """
+        if isinstance(signals, tuple):
+            bullish, bearish = signals
+            
+            # Add bullish markers
+            if bullish.any():
+                fig.add_trace(
+                    go.Scatter(
+                        x=self.df.index[bullish],
+                        y=self.df['Low'][bullish] * 0.99,
+                        mode='markers',
+                        marker=dict(
+                            symbol='triangle-up',
+                            size=10,
+                            color=self.config.color_scheme['bullish']
+                        ),
+                        name=f'{pattern_name} (Bullish)',
+                        showlegend=True
+                    ),
+                    row=row, col=col
+                )
+            
+            # Add bearish markers
+            if bearish.any():
+                fig.add_trace(
+                    go.Scatter(
+                        x=self.df.index[bearish],
+                        y=self.df['High'][bearish] * 1.01,
+                        mode='markers',
+                        marker=dict(
+                            symbol='triangle-down',
+                            size=10,
+                            color=self.config.color_scheme['bearish']
+                        ),
+                        name=f'{pattern_name} (Bearish)',
+                        showlegend=True
+                    ),
+                    row=row, col=col
+                )
+        else:
+            # Add neutral markers
+            if signals.any():
+                fig.add_trace(
+                    go.Scatter(
+                        x=self.df.index[signals],
+                        y=self.df['Low'][signals] * 0.99,
+                        mode='markers',
+                        marker=dict(
+                            symbol='circle',
+                            size=8,
+                            color=self.config.color_scheme['neutral']
+                        ),
+                        name=pattern_name,
+                        showlegend=True
+                    ),
+                    row=row, col=col
+                )
+
+
+    def _get_pattern_signals(self, pattern_name: str) -> Union[pd.Series, Tuple[pd.Series, pd.Series], None]:
+        """
+        Get pattern signals with caching
+        
+        Args:
+            pattern_name (str): Name of the pattern
+            
+        Returns:
+            Pattern signals or None if detection fails
+        """
+        try:
+            # Check cache first
+            cached_result = self._get_pattern_results(pattern_name)
+            if cached_result is not None:
+                return cached_result
+                
+            # Calculate new results
+            pattern_func = getattr(self.patterns, f'detect_{pattern_name}')
+            result = pattern_func(self.df)
+            
+            # Cache the results
+            self._set_pattern_results(pattern_name, result)
+            
+            return result
+            
+        except Exception as e:
+            print(f"Error getting signals for {pattern_name}: {str(e)}")
+            return None
+
 
     def _add_pattern_distribution(self, fig: go.Figure, row: int, col: int) -> None:
         """Add pattern distribution pie chart"""
@@ -1183,6 +1325,30 @@ class CandlestickVisualizer:
         except Exception as e:
             print(f"Error calculating pattern correlation: {str(e)}")
             return None
+    
+    def _get_safe_pattern_methods(self) -> Dict[str, Callable]:
+        """
+        Get pattern detection methods with error handling
+        
+        Returns:
+            Dict[str, Callable]: Dictionary of safe pattern methods
+            
+        Note:
+            Filters out methods that require special handling
+        """
+        excluded_patterns = {
+            'breakout_patterns', 'harmonic_patterns', 'multi_timeframe_patterns',
+            'pattern_combinations', 'pattern_reliability', 'volatility_adjusted_patterns'
+        }
+        
+        pattern_methods = {}
+        for name, method in inspect.getmembers(self.patterns, predicate=inspect.isfunction):
+            if name.startswith('detect_') and name[7:] not in excluded_patterns:
+                pattern_methods[name[7:]] = method
+        
+        return pattern_methods
+
+
     
     def _get_pattern_distribution(self) -> pd.Series:
         """Calculate pattern distribution"""

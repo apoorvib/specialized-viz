@@ -1043,6 +1043,378 @@ class CandlestickVisualizer:
         
         return failed_instances
 
+    def _check_pattern_failure(self,
+                            data: pd.DataFrame,
+                            direction: str,
+                            threshold: float) -> Dict[str, Any]:
+        """
+        Check if a pattern has failed
+        
+        Args:
+            data (pd.DataFrame): Post-pattern price data
+            direction (str): Expected pattern direction
+            threshold (float): Failure threshold
+            
+        Returns:
+            Dict[str, Any]: Failure analysis results
+        """
+        initial_price = data['Close'].iloc[0]
+        max_move = data['High'].max() / initial_price - 1
+        min_move = 1 - data['Low'].min() / initial_price
+        
+        failure_result = {
+            'failed': False,
+            'type': None,
+            'magnitude': 0.0,
+            'bars': 0
+        }
+        
+        if direction == 'bullish':
+            # Check for bullish pattern failure
+            if min_move > threshold:  # Price moved significantly lower
+                failure_result.update({
+                    'failed': True,
+                    'type': 'bearish_reversal',
+                    'magnitude': min_move,
+                    'bars': data['Low'].idxmin() - data.index[0]
+                })
+            elif max_move < threshold/2:  # Price didn't move up enough
+                failure_result.update({
+                    'failed': True,
+                    'type': 'no_follow_through',
+                    'magnitude': max_move,
+                    'bars': len(data)
+                })
+                
+        elif direction == 'bearish':
+            # Check for bearish pattern failure
+            if max_move > threshold:  # Price moved significantly higher
+                failure_result.update({
+                    'failed': True,
+                    'type': 'bullish_reversal',
+                    'magnitude': max_move,
+                    'bars': data['High'].idxmax() - data.index[0]
+                })
+            elif min_move < threshold/2:  # Price didn't move down enough
+                failure_result.update({
+                    'failed': True,
+                    'type': 'no_follow_through',
+                    'magnitude': min_move,
+                    'bars': len(data)
+                })
+                
+        else:  # neutral patterns
+            # Check for any significant move
+            if max(max_move, min_move) < threshold/2:
+                failure_result.update({
+                    'failed': True,
+                    'type': 'no_breakout',
+                    'magnitude': max(max_move, min_move),
+                    'bars': len(data)
+                })
+        
+        return failure_result
+
+    def analyze_failure_patterns(self, failed_patterns: pd.DataFrame) -> Dict[str, Any]:
+        """
+        Analyze characteristics of failed patterns
+        
+        Args:
+            failed_patterns (pd.DataFrame): DataFrame of failed patterns
+            
+        Returns:
+            Dict[str, Any]: Analysis of failure patterns
+        """
+        if failed_patterns.empty:
+            return {}
+            
+        analysis = {
+            'total_failures': len(failed_patterns),
+            'failure_by_pattern': failed_patterns['pattern'].value_counts().to_dict(),
+            'failure_by_type': failed_patterns['failure_type'].value_counts().to_dict(),
+            'average_magnitude': failed_patterns['failure_magnitude'].mean(),
+            'average_bars_to_failure': failed_patterns['bars_to_failure'].mean(),
+            'direction_distribution': failed_patterns['direction'].value_counts().to_dict(),
+            'pattern_specific_analysis': {}
+        }
+        
+        # Analyze each pattern type separately
+        for pattern in failed_patterns['pattern'].unique():
+            pattern_fails = failed_patterns[failed_patterns['pattern'] == pattern]
+            
+            analysis['pattern_specific_analysis'][pattern] = {
+                'count': len(pattern_fails),
+                'average_magnitude': pattern_fails['failure_magnitude'].mean(),
+                'common_failure_type': pattern_fails['failure_type'].mode().iloc[0],
+                'direction_distribution': pattern_fails['direction'].value_counts().to_dict()
+            }
+        
+        return analysis
+
+    def get_failure_zones(self, 
+                        failed_patterns: pd.DataFrame,
+                        min_failures: int = 3) -> pd.DataFrame:
+        """
+        Identify price zones with frequent pattern failures
+        
+        Args:
+            failed_patterns (pd.DataFrame): DataFrame of failed patterns
+            min_failures (int): Minimum failures to identify a zone
+            
+        Returns:
+            pd.DataFrame: Price zones with frequent failures
+        """
+        if failed_patterns.empty:
+            return pd.DataFrame()
+            
+        failure_zones = []
+        
+        # Group failures by price level
+        price_levels = pd.IntervalIndex.from_arrays(
+            self.df['Low'],
+            self.df['High'],
+            closed='both'
+        )
+        
+        for date in failed_patterns['date']:
+            idx = self.df.index.get_loc(date)
+            price_range = price_levels[idx]
+            
+            # Find overlapping failures
+            overlapping = [
+                zone for zone in failure_zones
+                if (zone['price_low'] <= price_range.right and 
+                    zone['price_high'] >= price_range.left)
+            ]
+            
+            if overlapping:
+                # Update existing zone
+                zone = overlapping[0]
+                zone['count'] += 1
+                zone['price_low'] = min(zone['price_low'], price_range.left)
+                zone['price_high'] = max(zone['price_high'], price_range.right)
+                zone['patterns'].append(failed_patterns.loc[
+                    failed_patterns['date'] == date, 'pattern'].iloc[0])
+            else:
+                # Create new zone
+                failure_zones.append({
+                    'price_low': price_range.left,
+                    'price_high': price_range.right,
+                    'count': 1,
+                    'patterns': [failed_patterns.loc[
+                        failed_patterns['date'] == date, 'pattern'].iloc[0]]
+                })
+        
+        # Filter zones by minimum failures
+        significant_zones = [
+            zone for zone in failure_zones
+            if zone['count'] >= min_failures
+        ]
+        
+        return pd.DataFrame(significant_zones)
+
+    def analyze_pattern_completion_probability(self,
+                                            lookback_period: int = 100,
+                                            min_occurrences: int = 5) -> pd.DataFrame:
+        """
+        Analyze completion probability for detected patterns
+        
+        Args:
+            lookback_period (int): Historical period to analyze
+            min_occurrences (int): Minimum pattern occurrences for analysis
+            
+        Returns:
+            pd.DataFrame: Pattern completion statistics and probabilities
+        """
+        pattern_methods = self._get_safe_pattern_methods()
+        completion_stats = []
+        
+        for pattern_name, pattern_func in pattern_methods.items():
+            try:
+                signals = self._get_pattern_signals(pattern_name)
+                if signals is None:
+                    continue
+                    
+                if isinstance(signals, tuple):
+                    # Handle bullish/bearish patterns separately
+                    for direction, signal in zip(['bullish', 'bearish'], signals):
+                        stats = self._calculate_completion_stats(
+                            signal,
+                            pattern_name,
+                            direction,
+                            lookback_period
+                        )
+                        if stats['total_occurrences'] >= min_occurrences:
+                            completion_stats.append(stats)
+                else:
+                    # Handle neutral patterns
+                    stats = self._calculate_completion_stats(
+                        signals,
+                        pattern_name,
+                        'neutral',
+                        lookback_period
+                    )
+                    if stats['total_occurrences'] >= min_occurrences:
+                        completion_stats.append(stats)
+                        
+            except Exception as e:
+                print(f"Error analyzing completion for {pattern_name}: {str(e)}")
+                continue
+        
+        return pd.DataFrame(completion_stats)
+
+    def _calculate_completion_stats(self,
+                                signal: pd.Series,
+                                pattern_name: str,
+                                direction: str,
+                                lookback_period: int) -> Dict[str, Any]:
+        """
+        Calculate completion statistics for a specific pattern
+        
+        Args:
+            signal (pd.Series): Pattern signal series
+            pattern_name (str): Name of the pattern
+            direction (str): Pattern direction
+            lookback_period (int): Analysis period
+            
+        Returns:
+            Dict[str, Any]: Completion statistics
+        """
+        # Initialize statistics
+        stats = {
+            'pattern_name': pattern_name,
+            'direction': direction,
+            'total_occurrences': 0,
+            'successful_completions': 0,
+            'failed_completions': 0,
+            'partial_completions': 0,
+            'avg_completion_time': 0,
+            'avg_price_target_reach': 0,
+            'completion_probability': 0.0,
+            'risk_reward_ratio': 0.0
+        }
+        
+        # Get pattern occurrences
+        pattern_dates = signal[signal > 0].index
+        completion_times = []
+        target_reaches = []
+        
+        for date in pattern_dates:
+            try:
+                completion_data = self._analyze_pattern_completion(date, direction)
+                
+                stats['total_occurrences'] += 1
+                
+                if completion_data['completed']:
+                    stats['successful_completions'] += 1
+                    completion_times.append(completion_data['bars_to_completion'])
+                    target_reaches.append(completion_data['target_reach_percentage'])
+                elif completion_data['partial']:
+                    stats['partial_completions'] += 1
+                else:
+                    stats['failed_completions'] += 1
+                    
+            except Exception as e:
+                print(f"Error analyzing completion at {date}: {str(e)}")
+                continue
+        
+        # Calculate averages and probabilities
+        if stats['total_occurrences'] > 0:
+            stats['completion_probability'] = (
+                stats['successful_completions'] / stats['total_occurrences']
+            )
+            
+            if completion_times:
+                stats['avg_completion_time'] = np.mean(completion_times)
+                stats['avg_price_target_reach'] = np.mean(target_reaches)
+                
+            # Calculate risk/reward
+            stats['risk_reward_ratio'] = self._calculate_risk_reward_ratio(
+                pattern_name, direction)
+        
+        return stats
+
+    def _analyze_pattern_completion(self,
+                                pattern_date: pd.Timestamp,
+                                direction: str,
+                                max_bars: int = 20) -> Dict[str, Any]:
+        """
+        Analyze completion data for a specific pattern instance
+        
+        Args:
+            pattern_date (pd.Timestamp): Date of pattern occurrence
+            direction (str): Pattern direction
+            max_bars (int): Maximum bars to check for completion
+            
+        Returns:
+            Dict[str, Any]: Completion analysis results
+        """
+        try:
+            idx = self.df.index.get_loc(pattern_date)
+            if idx + max_bars >= len(self.df):
+                return {'completed': False, 'partial': False}
+                
+            # Get price data after pattern
+            post_pattern_data = self.df.iloc[idx:idx+max_bars+1]
+            initial_price = post_pattern_data['Close'].iloc[0]
+            
+            # Calculate expected targets and stops
+            targets, stops = self._calculate_pattern_targets(
+                post_pattern_data.iloc[0],
+                direction
+            )
+            
+            completion_data = {
+                'completed': False,
+                'partial': False,
+                'bars_to_completion': max_bars,
+                'target_reach_percentage': 0.0
+            }
+            
+            # Analyze price movement
+            for i, (_, prices) in enumerate(post_pattern_data.iterrows()):
+                current_price = prices['Close']
+                price_change = (current_price - initial_price) / initial_price
+                
+                if direction == 'bullish':
+                    if current_price >= targets['first']:
+                        completion_data.update({
+                            'completed': True,
+                            'bars_to_completion': i,
+                            'target_reach_percentage': 100
+                        })
+                        break
+                    elif current_price <= stops['initial']:
+                        break
+                    elif current_price >= targets['partial']:
+                        completion_data['partial'] = True
+                        completion_data['target_reach_percentage'] = (
+                            (current_price - initial_price) / 
+                            (targets['first'] - initial_price) * 100
+                        )
+                        
+                elif direction == 'bearish':
+                    if current_price <= targets['first']:
+                        completion_data.update({
+                            'completed': True,
+                            'bars_to_completion': i,
+                            'target_reach_percentage': 100
+                        })
+                        break
+                    elif current_price >= stops['initial']:
+                        break
+                    elif current_price <= targets['partial']:
+                        completion_data['partial'] = True
+                        completion_data['target_reach_percentage'] = (
+                            (initial_price - current_price) / 
+                            (initial_price - targets['first']) * 100
+                        )
+            
+            return completion_data
+            
+        except Exception as e:
+            print(f"Error in completion analysis: {str(e)}")
+            return {'completed': False, 'partial': False}
 
     # def create_interactive_dashboard(self) -> go.Figure:
     #     """Create interactive dashboard with pattern filtering"""

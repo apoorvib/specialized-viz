@@ -5187,6 +5187,336 @@ class MarketRegimeAnalyzer:
         
         return pattern_instances
 
+    def calculate_regime_transitions(self, 
+                               lookback_period: int = 252) -> pd.DataFrame:
+        """
+        Calculate probability of transitions between different market regimes
+        
+        Args:
+            lookback_period (int): Historical period to analyze in days
+            
+        Returns:
+            pd.DataFrame: Transition probability matrix
+        """
+        # Get historical regimes
+        lookback_start = self.df.index[-1] - pd.Timedelta(days=lookback_period)
+        historical_regimes = self.analyze_market_regime(
+            start_date=lookback_start,
+            end_date=self.df.index[-1]
+        )
+        
+        if len(historical_regimes) < 2:
+            return pd.DataFrame()
+        
+        # Create transition matrix
+        transitions = defaultdict(lambda: defaultdict(int))
+        total_transitions = defaultdict(int)
+        
+        # Count regime transitions
+        for i in range(len(historical_regimes) - 1):
+            current_regime = historical_regimes[i].regime_type
+            next_regime = historical_regimes[i + 1].regime_type
+            
+            transitions[current_regime][next_regime] += 1
+            total_transitions[current_regime] += 1
+        
+        # Calculate probabilities
+        unique_regimes = set(r.regime_type for r in historical_regimes)
+        prob_matrix = pd.DataFrame(0.0, 
+                                index=unique_regimes, 
+                                columns=unique_regimes)
+        
+        for current_regime in unique_regimes:
+            if total_transitions[current_regime] > 0:
+                for next_regime in unique_regimes:
+                    prob = (transitions[current_regime][next_regime] / 
+                        total_transitions[current_regime])
+                    prob_matrix.loc[current_regime, next_regime] = prob
+        
+        return prob_matrix
+
+    def predict_next_regime(self, 
+                        current_regime: MarketRegime,
+                        confidence_threshold: float = 0.6) -> Dict[str, Any]:
+        """
+        Predict the most likely next regime
+        
+        Args:
+            current_regime (MarketRegime): Current market regime
+            confidence_threshold (float): Minimum confidence for prediction
+            
+        Returns:
+            Dict[str, Any]: Prediction details
+        """
+        # Get transition probabilities
+        transition_matrix = self.calculate_regime_transitions()
+        if transition_matrix.empty:
+            return {
+                'predicted_regime': None,
+                'confidence': 0.0,
+                'probabilities': {}
+            }
+        
+        # Get transition probabilities for current regime
+        if current_regime.regime_type not in transition_matrix.index:
+            return {
+                'predicted_regime': None,
+                'confidence': 0.0,
+                'probabilities': {}
+            }
+        
+        regime_transitions = transition_matrix.loc[current_regime.regime_type]
+        
+        # Sort probabilities
+        sorted_probs = regime_transitions.sort_values(ascending=False)
+        highest_prob = sorted_probs.iloc[0]
+        
+        # Check if prediction meets confidence threshold
+        if highest_prob >= confidence_threshold:
+            prediction = {
+                'predicted_regime': sorted_probs.index[0],
+                'confidence': highest_prob,
+                'probabilities': sorted_probs.to_dict()
+            }
+        else:
+            prediction = {
+                'predicted_regime': None,
+                'confidence': highest_prob,
+                'probabilities': sorted_probs.to_dict()
+            }
+        
+        # Add transition timing estimate
+        prediction['estimated_duration'] = self._estimate_regime_duration(
+            current_regime.regime_type)
+        
+        return prediction
+
+    def _estimate_regime_duration(self, 
+                                regime_type: str,
+                                lookback_days: int = 252) -> Dict[str, float]:
+        """
+        Estimate the likely duration of a regime
+        
+        Args:
+            regime_type (str): Type of regime
+            lookback_days (int): Historical period to analyze
+            
+        Returns:
+            Dict[str, float]: Duration statistics
+        """
+        # Get historical regimes
+        lookback_start = self.df.index[-1] - pd.Timedelta(days=lookback_days)
+        historical_regimes = self.analyze_market_regime(
+            start_date=lookback_start,
+            end_date=self.df.index[-1]
+        )
+        
+        # Calculate durations for the specified regime type
+        durations = []
+        
+        for regime in historical_regimes:
+            if regime.regime_type == regime_type:
+                duration = (regime.end_date - regime.start_date).days
+                durations.append(duration)
+        
+        if not durations:
+            return {
+                'avg_duration': 0,
+                'min_duration': 0,
+                'max_duration': 0,
+                'std_duration': 0
+            }
+        
+        return {
+            'avg_duration': np.mean(durations),
+            'min_duration': min(durations),
+            'max_duration': max(durations),
+            'std_duration': np.std(durations)
+        }
+        
+    def analyze_regime_stability(self, 
+                            current_regime: MarketRegime,
+                            window_size: int = 20) -> Dict[str, float]:
+        """
+        Analyze stability of current market regime
+        
+        Args:
+            current_regime (MarketRegime): Current market regime
+            window_size (int): Analysis window size
+            
+        Returns:
+            Dict[str, float]: Stability metrics
+        """
+        latest_data = self.df.iloc[-window_size:]
+        
+        stability_metrics = {
+            'volatility_stability': self._analyze_volatility_stability(latest_data),
+            'trend_stability': self._analyze_trend_stability(latest_data),
+            'volume_stability': self._analyze_volume_stability(latest_data),
+            'momentum_stability': self._analyze_momentum_stability(latest_data),
+            'support_resistance_stability': self._analyze_sr_stability(latest_data)
+        }
+        
+        # Calculate overall stability score
+        weights = {
+            'volatility_stability': 0.25,
+            'trend_stability': 0.25,
+            'volume_stability': 0.15,
+            'momentum_stability': 0.20,
+            'support_resistance_stability': 0.15
+        }
+        
+        stability_metrics['overall_stability'] = sum(
+            stability_metrics[k] * weights[k] for k in weights
+        )
+        
+        return stability_metrics
+
+    def _analyze_volatility_stability(self, data: pd.DataFrame) -> float:
+        """
+        Analyze stability of volatility
+        
+        Args:
+            data (pd.DataFrame): Price data
+            
+        Returns:
+            float: Volatility stability score between 0 and 1
+        """
+        # Calculate rolling volatility
+        returns = data['Close'].pct_change()
+        rolling_vol = returns.rolling(window=5).std()
+        
+        # Calculate volatility of volatility
+        vol_of_vol = rolling_vol.std()
+        
+        # Convert to stability score (lower vol of vol = higher stability)
+        stability = 1 / (1 + vol_of_vol)
+        
+        return min(1.0, stability)
+
+    def _analyze_trend_stability(self, data: pd.DataFrame) -> float:
+        """
+        Analyze stability of price trend
+        
+        Args:
+            data (pd.DataFrame): Price data
+            
+        Returns:
+            float: Trend stability score between 0 and 1
+        """
+        # Calculate various trend indicators
+        sma20 = data['Close'].rolling(window=20).mean()
+        sma50 = data['Close'].rolling(window=50).mean()
+        
+        # Calculate trend direction changes
+        trend_changes = ((data['Close'] > sma20) != 
+                        (data['Close'].shift(1) > sma20)).sum()
+        
+        # Calculate slope consistency
+        price_changes = data['Close'].diff()
+        slope_changes = (price_changes > 0) != (price_changes.shift(1) > 0)
+        slope_consistency = 1 - slope_changes.sum() / len(data)
+        
+        # Combine metrics
+        stability = (0.6 * slope_consistency + 
+                    0.4 * (1 - trend_changes / len(data)))
+        
+        return min(1.0, stability)
+
+    def _analyze_volume_stability(self, data: pd.DataFrame) -> float:
+        """
+        Analyze stability of trading volume
+        
+        Args:
+            data (pd.DataFrame): Price data
+            
+        Returns:
+            float: Volume stability score between 0 and 1
+        """
+        if 'Volume' not in data.columns:
+            return 0.5
+        
+        # Calculate volume metrics
+        volume = data['Volume']
+        volume_ma = volume.rolling(window=10).mean()
+        
+        # Calculate volume volatility
+        volume_volatility = volume.std() / volume.mean()
+        
+        # Calculate consistency of volume trend
+        volume_trend_changes = ((volume > volume_ma) != 
+                            (volume.shift(1) > volume_ma)).sum()
+        
+        # Combine metrics
+        stability = (0.5 * (1 / (1 + volume_volatility)) + 
+                    0.5 * (1 - volume_trend_changes / len(data)))
+        
+        return min(1.0, stability)
+
+    def _analyze_momentum_stability(self, data: pd.DataFrame) -> float:
+        """
+        Analyze stability of momentum indicators
+        
+        Args:
+            data (pd.DataFrame): Price data
+            
+        Returns:
+            float: Momentum stability score between 0 and 1
+        """
+        # Calculate momentum indicators
+        rsi = self._calculate_rsi(data['Close'])
+        macd, signal = self._calculate_macd_with_signal(data['Close'])
+        
+        # Calculate RSI stability
+        rsi_volatility = rsi.std()
+        rsi_stability = 1 / (1 + rsi_volatility / 20)  # Normalize by typical RSI range
+        
+        # Calculate MACD stability
+        macd_crossovers = ((macd > signal) != 
+                        (macd.shift(1) > signal.shift(1))).sum()
+        macd_stability = 1 - macd_crossovers / len(data)
+        
+        # Combine metrics
+        stability = 0.5 * (rsi_stability + macd_stability)
+        
+        return min(1.0, stability)
+
+    def _analyze_sr_stability(self, data: pd.DataFrame) -> float:
+        """
+        Analyze stability of support and resistance levels
+        
+        Args:
+            data (pd.DataFrame): Price data
+            
+        Returns:
+            float: Support/resistance stability score between 0 and 1
+        """
+        # Calculate key levels
+        levels = self._identify_key_levels(data)
+        
+        # Calculate price bounces off levels
+        bounces = 0
+        breaks = 0
+        
+        for level in levels:
+            # Count bounces and breaks
+            for i in range(1, len(data)):
+                if (abs(data['Close'].iloc[i] - level) / level < 0.001):
+                    if data['Close'].iloc[i-1] < level and data['Close'].iloc[i] > level:
+                        breaks += 1
+                    elif data['Close'].iloc[i-1] > level and data['Close'].iloc[i] < level:
+                        breaks += 1
+                    else:
+                        bounces += 1
+        
+        if bounces + breaks == 0:
+            return 0.5
+        
+        # Calculate stability based on bounce/break ratio
+        stability = bounces / (bounces + breaks)
+        
+        return min(1.0, stability)
+    
     def _calculate_pattern_regime_metrics(self,
                                         pattern_instances: List[Dict[str, Any]]) -> Dict[str, float]:
         """
@@ -5220,6 +5550,326 @@ class MarketRegimeAnalyzer:
         }
         
         return metrics  
+    
+    def _compare_regime_volatility(self, vol1: str, vol2: str) -> float:
+        """
+        Compare volatility states between regimes
+        
+        Args:
+            vol1 (str): First regime's volatility state
+            vol2 (str): Second regime's volatility state
+            
+        Returns:
+            float: Similarity score between 0 and 1
+        """
+        volatility_ranks = {
+            'low': 0,
+            'medium': 1,
+            'high': 2,
+            'very_high': 3
+        }
+        
+        try:
+            rank_diff = abs(volatility_ranks[vol1] - volatility_ranks[vol2])
+            if rank_diff == 0:
+                return 1.0
+            elif rank_diff == 1:
+                return 0.5
+            else:
+                return 0.0
+        except KeyError:
+            return 0.0
+
+    def _compare_regime_trend(self, trend1: str, trend2: str) -> float:
+        """
+        Compare trend states between regimes
+        
+        Args:
+            trend1 (str): First regime's trend state
+            trend2 (str): Second regime's trend state
+            
+        Returns:
+            float: Similarity score between 0 and 1
+        """
+        trend_ranks = {
+            'strong_bearish': -2,
+            'bearish': -1,
+            'neutral': 0,
+            'bullish': 1,
+            'strong_bullish': 2
+        }
+        
+        try:
+            rank_diff = abs(trend_ranks[trend1] - trend_ranks[trend2])
+            if rank_diff == 0:
+                return 1.0
+            elif rank_diff == 1:
+                return 0.7
+            elif rank_diff == 2:
+                return 0.3
+            else:
+                return 0.0
+        except KeyError:
+            return 0.0
+
+    def _compare_regime_volume(self, vol1: str, vol2: str) -> float:
+        """
+        Compare volume characteristics between regimes
+        
+        Args:
+            vol1 (str): First regime's volume state
+            vol2 (str): Second regime's volume state
+            
+        Returns:
+            float: Similarity score between 0 and 1
+        """
+        volume_ranks = {
+            'decreasing': -1,
+            'stable': 0,
+            'increasing': 1
+        }
+        
+        try:
+            rank_diff = abs(volume_ranks[vol1] - volume_ranks[vol2])
+            if rank_diff == 0:
+                return 1.0
+            elif rank_diff == 1:
+                return 0.5
+            else:
+                return 0.0
+        except KeyError:
+            return 0.0
+
+    def _calculate_confidence_score(self, pattern_instances: List[Dict[str, Any]]) -> float:
+        """
+        Calculate confidence score for pattern instances
+        
+        Args:
+            pattern_instances (List[Dict[str, Any]]): Pattern instances with outcomes
+            
+        Returns:
+            float: Confidence score between 0 and 1
+        """
+        if not pattern_instances:
+            return 0.0
+        
+        # Consider multiple factors for confidence
+        factors = {
+            'success_consistency': self._calculate_success_consistency(pattern_instances),
+            'return_consistency': self._calculate_return_consistency(pattern_instances),
+            'time_consistency': self._calculate_time_consistency(pattern_instances),
+            'risk_consistency': self._calculate_risk_consistency(pattern_instances)
+        }
+        
+        # Weighted average of factors
+        weights = {
+            'success_consistency': 0.35,
+            'return_consistency': 0.25,
+            'time_consistency': 0.20,
+            'risk_consistency': 0.20
+        }
+        
+        confidence = sum(factors[k] * weights[k] for k in factors)
+        return confidence
+
+    def _calculate_regime_risk_reward(self, pattern_instances: List[Dict[str, Any]]) -> float:
+        """
+        Calculate risk/reward ratio for pattern instances in regime
+        
+        Args:
+            pattern_instances (List[Dict[str, Any]]): Pattern instances with outcomes
+            
+        Returns:
+            float: Risk/reward ratio
+        """
+        if not pattern_instances:
+            return 0.0
+        
+        # Calculate average positive and negative returns
+        positive_returns = [p['return'] for p in pattern_instances if p['return'] > 0]
+        negative_returns = [abs(p['return']) for p in pattern_instances if p['return'] < 0]
+        
+        avg_reward = np.mean(positive_returns) if positive_returns else 0
+        avg_risk = np.mean(negative_returns) if negative_returns else float('inf')
+        
+        if avg_risk == 0:
+            return float('inf') if avg_reward > 0 else 0.0
+        
+        return avg_reward / avg_risk
+
+    def _calculate_success_consistency(self, pattern_instances: List[Dict[str, Any]]) -> float:
+        """
+        Calculate consistency of pattern success
+        
+        Args:
+            pattern_instances (List[Dict[str, Any]]): Pattern instances with outcomes
+            
+        Returns:
+            float: Consistency score between 0 and 1
+        """
+        if len(pattern_instances) < 2:
+            return 0.0
+        
+        # Convert success/failure to binary series
+        success_series = pd.Series([1 if p['success'] else 0 for p in pattern_instances])
+        
+        # Calculate runs test statistic
+        runs = len(success_series.diff()[success_series.diff() != 0]) + 1
+        expected_runs = (2 * success_series.mean() * (1 - success_series.mean()) * 
+                        len(success_series) + 1)
+        
+        # Normalize consistency score
+        consistency = 1 - abs(runs - expected_runs) / expected_runs
+        return max(0, min(1, consistency))
+    
+    def _calculate_return_consistency(self, pattern_instances: List[Dict[str, Any]]) -> float:
+        """
+        Calculate consistency of pattern returns
+        
+        Args:
+            pattern_instances (List[Dict[str, Any]]): Pattern instances with outcomes
+            
+        Returns:
+            float: Return consistency score between 0 and 1
+        """
+        if len(pattern_instances) < 2:
+            return 0.0
+            
+        returns = [p['return'] for p in pattern_instances]
+        
+        # Calculate coefficient of variation (CV)
+        mean_return = np.mean(returns)
+        std_return = np.std(returns)
+        
+        if mean_return == 0:
+            return 0.0
+            
+        cv = abs(std_return / mean_return)
+        
+        # Convert CV to consistency score (lower CV = higher consistency)
+        consistency = 1 / (1 + cv)
+        
+        return consistency
+
+    def _calculate_time_consistency(self, pattern_instances: List[Dict[str, Any]]) -> float:
+        """
+        Calculate consistency of pattern completion time
+        
+        Args:
+            pattern_instances (List[Dict[str, Any]]): Pattern instances with outcomes
+            
+        Returns:
+            float: Time consistency score between 0 and 1
+        """
+        if len(pattern_instances) < 2:
+            return 0.0
+            
+        completion_times = [p.get('bars_to_completion', 0) for p in pattern_instances 
+                        if p.get('bars_to_completion') is not None]
+        
+        if not completion_times:
+            return 0.0
+            
+        # Calculate standard deviation of completion times
+        mean_time = np.mean(completion_times)
+        std_time = np.std(completion_times)
+        
+        if mean_time == 0:
+            return 0.0
+            
+        # Calculate coefficient of variation and convert to consistency score
+        cv = std_time / mean_time
+        consistency = 1 / (1 + cv)
+        
+        # Adjust for outliers
+        percentile_range = np.percentile(completion_times, [25, 75])
+        iqr = percentile_range[1] - percentile_range[0]
+        outliers = sum(1 for t in completion_times 
+                    if t < percentile_range[0] - 1.5 * iqr 
+                    or t > percentile_range[1] + 1.5 * iqr)
+        
+        outlier_penalty = outliers / len(completion_times)
+        consistency *= (1 - outlier_penalty)
+        
+        return consistency
+
+    def _calculate_risk_consistency(self, pattern_instances: List[Dict[str, Any]]) -> float:
+        """
+        Calculate consistency of pattern risk metrics
+        
+        Args:
+            pattern_instances (List[Dict[str, Any]]): Pattern instances with outcomes
+            
+        Returns:
+            float: Risk consistency score between 0 and 1
+        """
+        if len(pattern_instances) < 2:
+            return 0.0
+            
+        # Calculate various risk metrics for each instance
+        risk_metrics = []
+        
+        for instance in pattern_instances:
+            if instance.get('max_adverse_move') is not None:
+                risk_data = {
+                    'max_adverse': instance['max_adverse_move'],
+                    'risk_reward': (instance['return'] / abs(instance['max_adverse_move']) 
+                                if instance['max_adverse_move'] != 0 else 0),
+                    'stop_distance': instance.get('stop_distance', 0)
+                }
+                risk_metrics.append(risk_data)
+        
+        if not risk_metrics:
+            return 0.0
+        
+        # Calculate consistency scores for each metric
+        metric_scores = []
+        
+        for metric in ['max_adverse', 'risk_reward', 'stop_distance']:
+            values = [r[metric] for r in risk_metrics]
+            mean_val = np.mean(values)
+            std_val = np.std(values)
+            
+            if mean_val != 0:
+                cv = std_val / abs(mean_val)
+                metric_scores.append(1 / (1 + cv))
+            else:
+                metric_scores.append(0.0)
+        
+        # Weight and combine metric scores
+        weights = [0.4, 0.4, 0.2]  # Weights for max_adverse, risk_reward, stop_distance
+        consistency = sum(score * weight for score, weight in zip(metric_scores, weights))
+        
+        return consistency
+
+    def _calculate_combined_consistency(self, pattern_instances: List[Dict[str, Any]]) -> float:
+        """
+        Calculate overall consistency score combining all metrics
+        
+        Args:
+            pattern_instances (List[Dict[str, Any]]): Pattern instances with outcomes
+            
+        Returns:
+            float: Combined consistency score between 0 and 1
+        """
+        consistency_scores = {
+            'success': self._calculate_success_consistency(pattern_instances),
+            'return': self._calculate_return_consistency(pattern_instances),
+            'time': self._calculate_time_consistency(pattern_instances),
+            'risk': self._calculate_risk_consistency(pattern_instances)
+        }
+        
+        # Weight different consistency aspects
+        weights = {
+            'success': 0.35,
+            'return': 0.25,
+            'time': 0.20,
+            'risk': 0.20
+        }
+        
+        combined_score = sum(consistency_scores[k] * weights[k] for k in weights)
+        
+        return combined_score
         
 class VisualizationCache:
     """Cache manager for visualization calculations"""

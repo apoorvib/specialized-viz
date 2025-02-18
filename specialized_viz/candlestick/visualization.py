@@ -8776,3 +8776,182 @@ class MultipleTimeframeSynchronizer:
         )
         
         return fig
+        
+    def add_synchronized_indicators(self,
+                                  indicator_name: str,
+                                  params: Dict[str, Any] = None,
+                                  timeframes: List[str] = None) -> go.Figure:
+        """
+        Add technical indicator synchronized across timeframes
+        
+        Args:
+            indicator_name (str): Name of indicator to add
+            params (Dict[str, Any]): Indicator parameters
+            timeframes (List[str]): Timeframes to include
+            
+        Returns:
+            go.Figure: Updated figure with synchronized indicators
+        """
+        if timeframes is None:
+            timeframes = list(self.timeframes.keys())
+            
+        fig = make_subplots(
+            rows=len(timeframes),
+            cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.05
+        )
+        
+        for i, tf in enumerate(timeframes, 1):
+            if tf in self.timeframes:
+                df = self.timeframes[tf]
+                
+                # Calculate indicator for this timeframe
+                indicator_values = self._calculate_indicator(
+                    df, indicator_name, params)
+                
+                # Add indicator trace
+                if isinstance(indicator_values, pd.DataFrame):
+                    # Handle multi-line indicators (e.g., Bollinger Bands)
+                    for col in indicator_values.columns:
+                        fig.add_trace(
+                            go.Scatter(
+                                x=df.index,
+                                y=indicator_values[col],
+                                name=f'{col} ({tf})',
+                                line=dict(
+                                    width=1,
+                                    dash='dash' if 'upper' in col.lower() or 
+                                                  'lower' in col.lower() else 'solid'
+                                )
+                            ),
+                            row=i, col=1
+                        )
+                else:
+                    # Single-line indicator
+                    fig.add_trace(
+                        go.Scatter(
+                            x=df.index,
+                            y=indicator_values,
+                            name=f'{indicator_name} ({tf})',
+                            line=dict(width=1)
+                        ),
+                        row=i, col=1
+                    )
+        
+        return self._apply_indicator_styling(fig, indicator_name)
+    
+    def add_synchronized_patterns(self,
+                                pattern_types: List[str],
+                                timeframes: List[str] = None) -> go.Figure:
+        """
+        Add pattern detection synchronized across timeframes
+        
+        Args:
+            pattern_types (List[str]): Types of patterns to detect
+            timeframes (List[str]): Timeframes to include
+            
+        Returns:
+            go.Figure: Updated figure with synchronized patterns
+        """
+        if timeframes is None:
+            timeframes = list(self.timeframes.keys())
+            
+        fig = self.create_synchronized_view(timeframes)
+        
+        for i, tf in enumerate(timeframes, 1):
+            if tf in self.timeframes:
+                df = self.timeframes[tf]
+                
+                for pattern_type in pattern_types:
+                    # Detect patterns for this timeframe
+                    patterns = self._detect_patterns(df, pattern_type)
+                    
+                    if isinstance(patterns, tuple):
+                        # Handle bullish/bearish patterns
+                        bullish, bearish = patterns
+                        
+                        # Add bullish markers
+                        if bullish.any():
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=df.index[bullish],
+                                    y=df['Low'][bullish] * 0.99,
+                                    mode='markers',
+                                    marker=dict(
+                                        symbol='triangle-up',
+                                        size=8,
+                                        color=self.config.color_scheme['bullish']
+                                    ),
+                                    name=f'{pattern_type} Bullish ({tf})',
+                                    opacity=self.config.pattern_opacity
+                                ),
+                                row=i, col=1
+                            )
+                        
+                        # Add bearish markers
+                        if bearish.any():
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=df.index[bearish],
+                                    y=df['High'][bearish] * 1.01,
+                                    mode='markers',
+                                    marker=dict(
+                                        symbol='triangle-down',
+                                        size=8,
+                                        color=self.config.color_scheme['bearish']
+                                    ),
+                                    name=f'{pattern_type} Bearish ({tf})',
+                                    opacity=self.config.pattern_opacity
+                                ),
+                                row=i, col=1
+                            )
+        
+        return self._apply_pattern_styling(fig)
+    
+    def _calculate_indicator(self,
+                           df: pd.DataFrame,
+                           indicator_name: str,
+                           params: Dict[str, Any] = None) -> Union[pd.Series, pd.DataFrame]:
+        """
+        Calculate technical indicator
+        
+        Args:
+            df (pd.DataFrame): Price data
+            indicator_name (str): Indicator name
+            params (Dict[str, Any]): Indicator parameters
+            
+        Returns:
+            Union[pd.Series, pd.DataFrame]: Calculated indicator values
+        """
+        params = params or {}
+        
+        # Create indicator manager instance
+        indicator_manager = IndicatorManager(df)
+        
+        # Calculate indicator
+        try:
+            return indicator_manager.get_indicator(indicator_name, params)
+        except Exception as e:
+            print(f"Error calculating {indicator_name}: {str(e)}")
+            return pd.Series(index=df.index)
+    
+    def _detect_patterns(self,
+                        df: pd.DataFrame,
+                        pattern_type: str) -> Union[pd.Series, Tuple[pd.Series, pd.Series]]:
+        """
+        Detect patterns in data
+        
+        Args:
+            df (pd.DataFrame): Price data
+            pattern_type (str): Type of pattern to detect
+            
+        Returns:
+            Union[pd.Series, Tuple[pd.Series, pd.Series]]: Pattern signals
+        """
+        try:
+            pattern_analyzer = MarketRegimeAnalyzer(df)
+            return pattern_analyzer._get_pattern_signals(pattern_type)
+        except Exception as e:
+            print(f"Error detecting {pattern_type}: {str(e)}")
+            return pd.Series(False, index=df.index)

@@ -23,6 +23,75 @@ class VisualizationConfig:
     show_grid: bool = True
     annotation_font_size: int = 10
     
+    # New settings
+    fonts: Dict[str, Any] = field(default_factory=lambda: {
+        'family': 'Arial, sans-serif',
+        'sizes': {
+            'title': 16,
+            'subtitle': 14,
+            'axis': 12,
+            'label': 10,
+            'annotation': 10
+        },
+        'weights': {
+            'title': 'bold',
+            'subtitle': 'normal',
+            'axis': 'normal',
+            'label': 'normal'
+        }
+    })
+    
+    layout: Dict[str, Any] = field(default_factory=lambda: {
+        'padding': {
+            'top': 40,
+            'right': 40,
+            'bottom': 40,
+            'left': 60
+        },
+        'spacing': {
+            'vertical': 0.1,
+            'horizontal': 0.1
+        },
+        'legend': {
+            'position': 'top',
+            'orientation': 'horizontal'
+        }
+    })
+    
+    grid_settings: Dict[str, Any] = field(default_factory=lambda: {
+        'color': '#ecf0f1',
+        'opacity': 0.5,
+        'width': 1,
+        'style': 'dashed'
+    })
+    
+    annotation_settings: Dict[str, Any] = field(default_factory=lambda: {
+        'style': {
+            'background_color': 'rgba(255, 255, 255, 0.8)',
+            'border_color': '#95a5a6',
+            'border_width': 1
+        },
+        'arrow': {
+            'color': '#95a5a6',
+            'width': 1,
+            'style': 'solid'
+        }
+    })
+    
+    interactive_settings: Dict[str, Any] = field(default_factory=lambda: {
+        'enabled': True,
+        'animation': {
+            'duration': 500,
+            'easing': 'cubic-bezier(0.4, 0, 0.2, 1)',
+            'on_load': True
+        },
+        'tooltip': {
+            'enabled': True,
+            'background_color': 'rgba(255, 255, 255, 0.95)',
+            'border_color': '#95a5a6'
+        }
+    })
+    
     def __post_init__(self):
         if self.color_scheme is None:
             self.color_scheme = {
@@ -35,7 +104,51 @@ class VisualizationConfig:
                 'background': '#ffffff',
                 'text': '#2c3e50'
             }
-
+    
+    def update_theme(self, theme_name: str) -> None:
+        """
+        Update visualization theme
+        
+        Args:
+            theme_name (str): Name of the theme to apply
+        """
+        self.theme = theme_name
+        self._apply_theme_settings(theme_name)
+    
+    def _apply_theme_settings(self, theme_name: str) -> None:
+        """
+        Apply settings for specific theme
+        
+        Args:
+            theme_name (str): Theme name
+        """
+        theme_settings = THEME_PRESETS.get(theme_name, {})
+        for key, value in theme_settings.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        Convert config to dictionary for serialization
+        
+        Returns:
+            Dict[str, Any]: Configuration dictionary
+        """
+        return asdict(self)
+    
+    @classmethod
+    def from_dict(cls, config_dict: Dict[str, Any]) -> 'VisualizationConfig':
+        """
+        Create config from dictionary
+        
+        Args:
+            config_dict (Dict[str, Any]): Configuration dictionary
+            
+        Returns:
+            VisualizationConfig: Configuration instance
+        """
+        return cls(**config_dict)
+    
 class CandlestickVisualizer:
     def __init__(self, df: pd.DataFrame, config: Optional[VisualizationConfig] = None):
         """
@@ -7725,3 +7838,4 @@ class TaskMonitor:
                 'current_memory_usage': self._system_stats['memory_usage'][-1] 
                     if self._system_stats['memory_usage'] else 0
             }
+            

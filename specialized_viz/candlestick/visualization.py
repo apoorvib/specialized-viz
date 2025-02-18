@@ -8955,3 +8955,185 @@ class MultipleTimeframeSynchronizer:
         except Exception as e:
             print(f"Error detecting {pattern_type}: {str(e)}")
             return pd.Series(False, index=df.index)
+        
+    def _apply_indicator_styling(self, fig: go.Figure, indicator_name: str) -> go.Figure:
+        """
+        Apply consistent styling to indicator plots
+        
+        Args:
+            fig (go.Figure): Plotly figure
+            indicator_name (str): Name of indicator
+            
+        Returns:
+            go.Figure: Styled figure
+        """
+        # Update layout based on indicator type
+        indicator_styles = {
+            'bollinger_bands': {
+                'colors': ['purple', 'blue', 'purple'],
+                'fills': [None, None, 'tonexty'],
+                'opacity': 0.1
+            },
+            'rsi': {
+                'range': [0, 100],
+                'levels': [30, 70],
+                'colors': ['red', 'green']
+            },
+            'macd': {
+                'colors': ['blue', 'orange', 'gray'],
+                'bar_colors': ['green', 'red']
+            }
+        }
+        
+        if indicator_name.lower() in indicator_styles:
+            style = indicator_styles[indicator_name.lower()]
+            fig = self._apply_specific_indicator_style(fig, style, indicator_name)
+        
+        # Apply general styling
+        fig.update_layout(
+            showlegend=True,
+            legend=dict(
+                orientation='h',
+                yanchor='bottom',
+                y=1.02,
+                xanchor='right',
+                x=1
+            )
+        )
+        
+        return fig
+
+    def _apply_pattern_styling(self, fig: go.Figure) -> go.Figure:
+        """
+        Apply consistent styling to pattern markers
+        
+        Args:
+            fig (go.Figure): Plotly figure
+            
+        Returns:
+            go.Figure: Styled figure
+        """
+        fig.update_layout(
+            showlegend=True,
+            legend=dict(
+                orientation='h',
+                yanchor='bottom',
+                y=1.02,
+                xanchor='right',
+                x=1
+            )
+        )
+        
+        # Add pattern highlight regions
+        for trace in fig.data:
+            if trace.name and ('Bullish' in trace.name or 'Bearish' in trace.name):
+                fig.add_shape(
+                    type='rect',
+                    x0=trace.x[0] if len(trace.x) > 0 else None,
+                    x1=trace.x[-1] if len(trace.x) > 0 else None,
+                    y0=0,
+                    y1=1,
+                    xref='x',
+                    yref='paper',
+                    fillcolor=self.config.color_scheme['bullish' if 'Bullish' in trace.name 
+                                                    else 'bearish'],
+                    opacity=0.1,
+                    layer='below',
+                    line_width=0
+                )
+        
+        return fig
+
+    def analyze_cross_timeframe_signals(self,
+                                    indicator_name: str,
+                                    params: Dict[str, Any] = None) -> pd.DataFrame:
+        """
+        Analyze signals across multiple timeframes
+        
+        Args:
+            indicator_name (str): Name of indicator to analyze
+            params (Dict[str, Any]): Indicator parameters
+            
+        Returns:
+            pd.DataFrame: Cross-timeframe analysis results
+        """
+        signals = {}
+        
+        for tf, df in self.timeframes.items():
+            # Calculate indicator for each timeframe
+            indicator_values = self._calculate_indicator(df, indicator_name, params)
+            
+            # Generate signals based on indicator type
+            signals[tf] = self._generate_signals(indicator_values, indicator_name)
+        
+        # Combine and analyze signals
+        return self._combine_timeframe_signals(signals)
+
+    def _generate_signals(self,
+                        indicator_values: Union[pd.Series, pd.DataFrame],
+                        indicator_name: str) -> pd.Series:
+        """
+        Generate trading signals from indicator values
+        
+        Args:
+            indicator_values: Indicator calculations
+            indicator_name (str): Name of indicator
+            
+        Returns:
+            pd.Series: Generated signals
+        """
+        if isinstance(indicator_values, pd.DataFrame):
+            # Handle multi-line indicators
+            if indicator_name.lower() == 'bollinger_bands':
+                middle = indicator_values['middle']
+                upper = indicator_values['upper']
+                lower = indicator_values['lower']
+                
+                return pd.Series(
+                    np.where(self.timeframes['1D']['Close'] > upper, -1,
+                            np.where(self.timeframes['1D']['Close'] < lower, 1, 0)),
+                    index=indicator_values.index
+                )
+        else:
+            # Handle single-line indicators
+            if indicator_name.lower() == 'rsi':
+                return pd.Series(
+                    np.where(indicator_values > 70, -1,
+                            np.where(indicator_values < 30, 1, 0)),
+                    index=indicator_values.index
+                )
+        
+        return pd.Series(0, index=indicator_values.index)
+
+    def _combine_timeframe_signals(self, signals: Dict[str, pd.Series]) -> pd.DataFrame:
+        """
+        Combine signals from different timeframes
+        
+        Args:
+            signals (Dict[str, pd.Series]): Signals for each timeframe
+            
+        Returns:
+            pd.DataFrame: Combined signal analysis
+        """
+        # Resample all signals to the base timeframe
+        resampled_signals = {}
+        base_index = self.timeframes['1D'].index
+        
+        for tf, signal in signals.items():
+            if tf == '1D':
+                resampled_signals[tf] = signal
+            else:
+                # Forward fill signals to base timeframe
+                resampled_signals[tf] = signal.reindex(base_index, method='ffill')
+        
+        # Combine signals
+        combined = pd.DataFrame(resampled_signals)
+        
+        # Calculate signal strength
+        combined['strength'] = combined.mean(axis=1)
+        
+        # Add confidence based on agreement between timeframes
+        combined['confidence'] = (combined.abs().mean(axis=1) * 
+                                (combined != 0).mean(axis=1))
+        
+        return combined

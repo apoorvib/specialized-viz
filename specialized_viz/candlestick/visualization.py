@@ -5473,6 +5473,329 @@ class MarketRegimeAnalyzer:
             'exhaustion_score': self._calculate_exhaustion_score(
                 price_trend, momentum_trend, trend_strength, failed_swings)
         }
+        
+    def _calculate_volatility_pressure_score(self,
+                                        current_vol: float,
+                                        historical_vol: float,
+                                        compression_ratio: float) -> float:
+        """
+        Calculate volatility pressure score
+        
+        Args:
+            current_vol (float): Current volatility
+            historical_vol (float): Historical volatility
+            compression_ratio (float): Bollinger Band compression ratio
+            
+        Returns:
+            float: Pressure score between 0 and 1
+        """
+        # Score components
+        vol_ratio_score = min(1.0, current_vol / historical_vol)
+        compression_score = min(1.0, 1 / compression_ratio)
+        
+        # Combine scores with weights
+        pressure_score = 0.6 * vol_ratio_score + 0.4 * compression_score
+        
+        return min(1.0, pressure_score)
+
+    def _calculate_exhaustion_score(self,
+                                price_trend: bool,
+                                momentum_trend: bool,
+                                trend_strength: float,
+                                failed_swings: int) -> float:
+        """
+        Calculate trend exhaustion score
+        
+        Args:
+            price_trend (bool): Current price trend direction
+            momentum_trend (bool): Current momentum trend direction
+            trend_strength (float): Strength of current trend
+            failed_swings (int): Number of failed swing patterns
+            
+        Returns:
+            float: Exhaustion score between 0 and 1
+        """
+        # Base score from trend strength
+        base_score = min(1.0, trend_strength)
+        
+        # Adjust for divergence
+        if price_trend != momentum_trend:
+            base_score += 0.2
+        
+        # Adjust for failed swings
+        swing_penalty = min(0.3, failed_swings * 0.1)
+        base_score += swing_penalty
+        
+        return min(1.0, base_score)
+
+    def _calculate_volume_anomaly_score(self,
+                                    relative_volume: float,
+                                    volume_spikes: int,
+                                    price_volume_correlation: float) -> float:
+        """
+        Calculate volume anomaly score
+        
+        Args:
+            relative_volume (float): Current relative volume
+            volume_spikes (int): Number of volume spikes
+            price_volume_correlation (float): Price-volume correlation
+            
+        Returns:
+            float: Anomaly score between 0 and 1
+        """
+        # Score components
+        volume_score = min(1.0, relative_volume / 3)
+        spike_score = min(1.0, volume_spikes / 5)
+        correlation_score = abs(price_volume_correlation)
+        
+        # Combine scores
+        anomaly_score = (0.4 * volume_score + 
+                        0.4 * spike_score + 
+                        0.2 * correlation_score)
+        
+        return min(1.0, anomaly_score)
+
+    def _calculate_divergence_score(self,
+                                regular_divergence: Dict[str, bool],
+                                hidden_divergence: Dict[str, bool]) -> float:
+        """
+        Calculate overall divergence score
+        
+        Args:
+            regular_divergence (Dict[str, bool]): Regular divergence signals
+            hidden_divergence (Dict[str, bool]): Hidden divergence signals
+            
+        Returns:
+            float: Divergence score between 0 and 1
+        """
+        # Count divergence signals
+        regular_count = sum(1 for v in regular_divergence.values() if v)
+        hidden_count = sum(1 for v in hidden_divergence.values() if v)
+        
+        # Weight different types of divergences
+        score = (0.6 * min(1.0, regular_count / 2) + 
+                0.4 * min(1.0, hidden_count / 2))
+        
+        return min(1.0, score)
+
+    def _detect_volatility_clusters(self, returns: pd.Series) -> int:
+        """
+        Detect clusters of high volatility
+        
+        Args:
+            returns (pd.Series): Price returns
+            
+        Returns:
+            int: Number of volatility clusters
+        """
+        # Calculate rolling volatility
+        rolling_vol = returns.rolling(window=5).std()
+        
+        # Define high volatility threshold (e.g., 2 standard deviations)
+        vol_threshold = rolling_vol.mean() + 2 * rolling_vol.std()
+        
+        # Identify high volatility periods
+        high_vol_periods = rolling_vol > vol_threshold
+        
+        # Count clusters (consecutive high volatility periods)
+        clusters = 0
+        in_cluster = False
+        
+        for is_high_vol in high_vol_periods:
+            if is_high_vol and not in_cluster:
+                clusters += 1
+                in_cluster = True
+            elif not is_high_vol:
+                in_cluster = False
+        
+        return clusters
+
+    def _detect_failed_swings(self, data: pd.DataFrame) -> int:
+        """
+        Detect failed swing patterns
+        
+        Args:
+            data (pd.DataFrame): Price data
+            
+        Returns:
+            int: Number of failed swings
+        """
+        failed_swings = 0
+        highs = self._find_swing_highs(data)
+        lows = self._find_swing_lows(data)
+        
+        # Analyze recent swing points
+        recent_highs = highs.iloc[-3:]
+        recent_lows = lows.iloc[-3:]
+        
+        # Check for failed highs (lower highs)
+        if len(recent_highs) >= 2:
+            if recent_highs.iloc[-1] < recent_highs.iloc[-2]:
+                failed_swings += 1
+        
+        # Check for failed lows (higher lows)
+        if len(recent_lows) >= 2:
+            if recent_lows.iloc[-1] > recent_lows.iloc[-2]:
+                failed_swings += 1
+        
+        return failed_swings
+    
+    def _detect_regular_divergence(self,
+                                price_highs: pd.Series,
+                                price_lows: pd.Series,
+                                indicator_highs: pd.Series,
+                                indicator_lows: pd.Series) -> Dict[str, bool]:
+        """
+        Detect regular bullish and bearish divergences
+        
+        Args:
+            price_highs (pd.Series): Series of price swing highs
+            price_lows (pd.Series): Series of price swing lows
+            indicator_highs (pd.Series): Series of indicator swing highs
+            indicator_lows (pd.Series): Series of indicator swing lows
+            
+        Returns:
+            Dict[str, bool]: Regular divergence signals
+        """
+        divergences = {
+            'bullish': False,  # Price making lower lows, indicator making higher lows
+            'bearish': False   # Price making higher highs, indicator making lower highs
+        }
+        
+        # Check for bearish divergence (last 2 swing highs)
+        if len(price_highs) >= 2 and len(indicator_highs) >= 2:
+            price_higher = price_highs.iloc[-1] > price_highs.iloc[-2]
+            indicator_lower = indicator_highs.iloc[-1] < indicator_highs.iloc[-2]
+            
+            if price_higher and indicator_lower:
+                divergences['bearish'] = True
+        
+        # Check for bullish divergence (last 2 swing lows)
+        if len(price_lows) >= 2 and len(indicator_lows) >= 2:
+            price_lower = price_lows.iloc[-1] < price_lows.iloc[-2]
+            indicator_higher = indicator_lows.iloc[-1] > indicator_lows.iloc[-2]
+            
+            if price_lower and indicator_higher:
+                divergences['bullish'] = True
+        
+        return divergences
+
+    def _detect_hidden_divergence(self,
+                                price_highs: pd.Series,
+                                price_lows: pd.Series,
+                                indicator_highs: pd.Series,
+                                indicator_lows: pd.Series) -> Dict[str, bool]:
+        """
+        Detect hidden bullish and bearish divergences
+        
+        Args:
+            price_highs (pd.Series): Series of price swing highs
+            price_lows (pd.Series): Series of price swing lows
+            indicator_highs (pd.Series): Series of indicator swing highs
+            indicator_lows (pd.Series): Series of indicator swing lows
+            
+        Returns:
+            Dict[str, bool]: Hidden divergence signals
+        """
+        divergences = {
+            'bullish': False,  # Price making higher lows, indicator making lower lows
+            'bearish': False   # Price making lower highs, indicator making higher highs
+        }
+        
+        # Check for hidden bearish divergence
+        if len(price_highs) >= 2 and len(indicator_highs) >= 2:
+            price_lower = price_highs.iloc[-1] < price_highs.iloc[-2]
+            indicator_higher = indicator_highs.iloc[-1] > indicator_highs.iloc[-2]
+            
+            if price_lower and indicator_higher:
+                divergences['bearish'] = True
+        
+        # Check for hidden bullish divergence
+        if len(price_lows) >= 2 and len(indicator_lows) >= 2:
+            price_higher = price_lows.iloc[-1] > price_lows.iloc[-2]
+            indicator_lower = indicator_lows.iloc[-1] < indicator_lows.iloc[-2]
+            
+            if price_higher and indicator_lower:
+                divergences['bullish'] = True
+        
+        return divergences
+
+    def _detect_volume_climax(self, data: pd.DataFrame) -> Dict[str, bool]:
+        """
+        Detect volume climax patterns
+        
+        Args:
+            data (pd.DataFrame): Price and volume data
+            
+        Returns:
+            Dict[str, bool]: Volume climax signals
+        """
+        if 'Volume' not in data.columns:
+            return {'buying_climax': False, 'selling_climax': False}
+        
+        # Calculate volume metrics
+        volume = data['Volume']
+        price = data['Close']
+        volume_ma = volume.rolling(window=20).mean()
+        
+        # Define climax conditions
+        high_volume = volume.iloc[-1] > 2 * volume_ma.iloc[-1]
+        price_change = price.pct_change()
+        
+        signals = {
+            'buying_climax': False,
+            'selling_climax': False
+        }
+        
+        # Check for buying climax
+        if high_volume and price_change.iloc[-1] > 0:
+            prior_trend = price_change.iloc[-20:-1].mean() > 0
+            if prior_trend:
+                signals['buying_climax'] = True
+        
+        # Check for selling climax
+        if high_volume and price_change.iloc[-1] < 0:
+            prior_trend = price_change.iloc[-20:-1].mean() < 0
+            if prior_trend:
+                signals['selling_climax'] = True
+        
+        return signals
+
+    def _analyze_volume_distribution(self, data: pd.DataFrame) -> Dict[str, float]:
+        """
+        Analyze volume distribution patterns
+        
+        Args:
+            data (pd.DataFrame): Price and volume data
+            
+        Returns:
+            Dict[str, float]: Volume distribution metrics
+        """
+        if 'Volume' not in data.columns:
+            return {}
+        
+        volume = data['Volume']
+        price = data['Close']
+        
+        # Calculate volume-weighted metrics
+        vwap = (price * volume).cumsum() / volume.cumsum()
+        volume_profile = pd.cut(price, bins=10).value_counts()
+        
+        # Calculate volume concentration
+        volume_std = volume.std() / volume.mean()
+        concentration = volume_profile.max() / volume_profile.sum()
+        
+        # Analyze up/down volume
+        up_volume = volume[price > price.shift(1)].sum()
+        down_volume = volume[price < price.shift(1)].sum()
+        
+        return {
+            'vwap': vwap.iloc[-1],
+            'volume_std': volume_std,
+            'concentration': concentration,
+            'up_down_ratio': up_volume / down_volume if down_volume > 0 else float('inf'),
+            'above_vwap_ratio': len(price[price > vwap]) / len(price)
+        }
 
     def _analyze_volume_anomalies(self, data: pd.DataFrame) -> Dict[str, float]:
         """
@@ -5659,6 +5982,210 @@ class MarketRegimeAnalyzer:
         stability = 0.5 * (rsi_stability + macd_stability)
         
         return min(1.0, stability)
+
+
+    def _calculate_transition_risk(self, drivers: Dict[str, Any]) -> float:
+        """
+        Calculate overall regime transition risk
+        
+        Args:
+            drivers (Dict[str, Any]): Analysis of transition drivers
+            
+        Returns:
+            float: Transition risk score between 0 and 1
+        """
+        # Weight different risk components
+        weights = {
+            'volatility_pressure': 0.25,
+            'trend_exhaustion': 0.25,
+            'volume_anomalies': 0.20,
+            'momentum_divergence': 0.20,
+            'support_resistance_tests': 0.10
+        }
+        
+        risk_score = 0.0
+        for component, weight in weights.items():
+            if component in drivers:
+                if isinstance(drivers[component], dict) and 'pressure_score' in drivers[component]:
+                    risk_score += weight * drivers[component]['pressure_score']
+                elif isinstance(drivers[component], dict) and 'anomaly_score' in drivers[component]:
+                    risk_score += weight * drivers[component]['anomaly_score']
+                elif isinstance(drivers[component], float):
+                    risk_score += weight * drivers[component]
+        
+        return min(1.0, risk_score)
+
+    def _identify_transition_scenarios(self,
+                                    current_regime: MarketRegime,
+                                    drivers: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Identify likely regime transition scenarios
+        
+        Args:
+            current_regime (MarketRegime): Current market regime
+            drivers (Dict[str, Any]): Analysis of transition drivers
+            
+        Returns:
+            List[Dict[str, Any]]: Potential transition scenarios with probabilities
+        """
+        scenarios = []
+        transition_matrix = self.calculate_regime_transitions()
+        
+        if transition_matrix.empty:
+            return scenarios
+        
+        # Get historical transitions from current regime
+        if current_regime.regime_type in transition_matrix.index:
+            possible_transitions = transition_matrix.loc[current_regime.regime_type]
+            
+            for next_regime, base_prob in possible_transitions.items():
+                if base_prob > 0:
+                    # Adjust probability based on current drivers
+                    adjusted_prob = self._adjust_transition_probability(
+                        base_prob,
+                        current_regime.regime_type,
+                        next_regime,
+                        drivers
+                    )
+                    
+                    if adjusted_prob >= 0.1:  # Only include significant possibilities
+                        scenarios.append({
+                            'from_regime': current_regime.regime_type,
+                            'to_regime': next_regime,
+                            'probability': adjusted_prob,
+                            'estimated_timeframe': self._estimate_transition_timeframe(
+                                current_regime.regime_type,
+                                next_regime,
+                                drivers
+                            ),
+                            'key_drivers': self._identify_key_drivers(
+                                current_regime.regime_type,
+                                next_regime,
+                                drivers
+                            )
+                        })
+        
+        # Sort by probability
+        scenarios.sort(key=lambda x: x['probability'], reverse=True)
+        return scenarios
+
+    def _adjust_transition_probability(self,
+                                    base_prob: float,
+                                    current_regime: str,
+                                    target_regime: str,
+                                    drivers: Dict[str, Any]) -> float:
+        """
+        Adjust transition probability based on current market drivers
+        
+        Args:
+            base_prob (float): Base transition probability
+            current_regime (str): Current regime type
+            target_regime (str): Target regime type
+            drivers (Dict[str, Any]): Current market drivers
+            
+        Returns:
+            float: Adjusted probability
+        """
+        adjustment = 0.0
+        
+        # Adjust based on volatility pressure
+        if 'volatility_pressure' in drivers:
+            vol_pressure = drivers['volatility_pressure'].get('pressure_score', 0)
+            if target_regime in ['high_volatility', 'crisis']:
+                adjustment += 0.2 * vol_pressure
+            elif current_regime in ['high_volatility', 'crisis']:
+                adjustment -= 0.1 * vol_pressure
+        
+        # Adjust based on trend exhaustion
+        if 'trend_exhaustion' in drivers:
+            exhaustion = drivers['trend_exhaustion'].get('exhaustion_score', 0)
+            if current_regime in ['trending', 'strong_trend']:
+                adjustment += 0.15 * exhaustion
+        
+        # Adjust based on volume anomalies
+        if 'volume_anomalies' in drivers:
+            vol_anomaly = drivers['volume_anomalies'].get('anomaly_score', 0)
+            adjustment += 0.1 * vol_anomaly
+        
+        # Calculate final probability
+        adjusted_prob = base_prob * (1 + adjustment)
+        return min(1.0, max(0.0, adjusted_prob))
+
+    def _estimate_transition_timeframe(self,
+                                    current_regime: str,
+                                    target_regime: str,
+                                    drivers: Dict[str, Any]) -> Dict[str, int]:
+        """
+        Estimate timeframe for regime transition
+        
+        Args:
+            current_regime (str): Current regime type
+            target_regime (str): Target regime type
+            drivers (Dict[str, Any]): Current market drivers
+            
+        Returns:
+            Dict[str, int]: Estimated timeframe ranges
+        """
+        # Get historical transition durations
+        historical_durations = self._get_historical_transition_durations(
+            current_regime, target_regime)
+        
+        if not historical_durations:
+            return {
+                'min_bars': 0,
+                'max_bars': 0,
+                'typical_bars': 0
+            }
+        
+        # Calculate base estimates
+        typical_duration = int(np.median(historical_durations))
+        min_duration = int(min(historical_durations))
+        max_duration = int(max(historical_durations))
+        
+        # Adjust based on current drivers
+        transition_risk = drivers.get('transition_risk', 0.5)
+        adjustment_factor = 1 - transition_risk  # Higher risk = faster transition
+        
+        return {
+            'min_bars': max(1, int(min_duration * adjustment_factor)),
+            'max_bars': max(2, int(max_duration * adjustment_factor)),
+            'typical_bars': max(1, int(typical_duration * adjustment_factor))
+        }
+
+    def _identify_key_drivers(self,
+                            current_regime: str,
+                            target_regime: str,
+                            drivers: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Identify key drivers for specific regime transition
+        
+        Args:
+            current_regime (str): Current regime type
+            target_regime (str): Target regime type
+            drivers (Dict[str, Any]): Current market drivers
+            
+        Returns:
+            List[Dict[str, Any]]: Key drivers for the transition
+        """
+        key_drivers = []
+        
+        for driver_name, driver_data in drivers.items():
+            if isinstance(driver_data, dict) and any(
+                score > 0.7 for score in driver_data.values() 
+                if isinstance(score, (int, float))
+            ):
+                key_drivers.append({
+                    'driver': driver_name,
+                    'importance': self._calculate_driver_importance(
+                        driver_name, current_regime, target_regime),
+                    'current_reading': driver_data.get('pressure_score', 
+                                                    driver_data.get('anomaly_score', 0)),
+                    'signal': 'high'
+                })
+        
+        # Sort by importance
+        key_drivers.sort(key=lambda x: x['importance'], reverse=True)
+        return key_drivers[:3]  # Return top 3 drivers
 
     def _analyze_sr_stability(self, data: pd.DataFrame) -> float:
         """
@@ -6123,3 +6650,286 @@ class VisualizationTheme:
             'legend_position': 'top'
         }
 
+class CalculationCache:
+    """
+    Cache manager for computationally intensive calculations
+    
+    Attributes:
+        max_size (int): Maximum number of items in cache
+        ttl (int): Time to live for cache items in seconds
+        cache (Dict): Main cache storage
+        access_times (Dict): Last access times for items
+        creation_times (Dict): Creation times for items
+        lock (threading.Lock): Thread lock for cache operations
+    """
+    
+    def __init__(self, max_size: int = 1000, ttl: int = 3600):
+        """
+        Initialize cache manager
+        
+        Args:
+            max_size (int): Maximum cache size
+            ttl (int): Cache item time to live in seconds
+        """
+        self.max_size = max_size
+        self.ttl = ttl
+        self.cache = {}
+        self.access_times = {}
+        self.creation_times = {}
+        self.lock = threading.Lock()
+    
+    def get(self, key: str) -> Optional[Any]:
+        """
+        Get item from cache
+        
+        Args:
+            key (str): Cache key
+            
+        Returns:
+            Optional[Any]: Cached value or None if not found/expired
+        """
+        with self.lock:
+            if key not in self.cache:
+                return None
+                
+            current_time = time.time()
+            
+            # Check if item has expired
+            if current_time - self.creation_times[key] > self.ttl:
+                self._remove_item(key)
+                return None
+            
+            # Update access time
+            self.access_times[key] = current_time
+            return self.cache[key]
+    
+    def set(self, key: str, value: Any) -> None:
+        """
+        Set item in cache
+        
+        Args:
+            key (str): Cache key
+            value (Any): Value to cache
+        """
+        with self.lock:
+            current_time = time.time()
+            
+            # Check if we need to make room
+            if len(self.cache) >= self.max_size:
+                self._evict_items()
+            
+            # Add new item
+            self.cache[key] = value
+            self.access_times[key] = current_time
+            self.creation_times[key] = current_time
+    
+    def _evict_items(self) -> None:
+        """Evict items based on access time and TTL"""
+        current_time = time.time()
+        
+        # First remove expired items
+        expired_keys = [
+            k for k, creation_time in self.creation_times.items()
+            if current_time - creation_time > self.ttl
+        ]
+        
+        for key in expired_keys:
+            self._remove_item(key)
+            
+        # If we still need to make room, remove least recently used
+        if len(self.cache) >= self.max_size:
+            oldest_key = min(self.access_times.items(), key=lambda x: x[1])[0]
+            self._remove_item(oldest_key)
+    
+    def _remove_item(self, key: str) -> None:
+        """
+        Remove item from cache
+        
+        Args:
+            key (str): Cache key to remove
+        """
+        self.cache.pop(key, None)
+        self.access_times.pop(key, None)
+        self.creation_times.pop(key, None)
+    
+    def clear(self) -> None:
+        """Clear all items from cache"""
+        with self.lock:
+            self.cache.clear()
+            self.access_times.clear()
+            self.creation_times.clear()
+            
+class IndicatorManager:
+    """
+    Manages lazy loading and caching of technical indicators
+    
+    Attributes:
+        df (pd.DataFrame): Price data
+        cache (CalculationCache): Cache for computed indicators
+        _computed_indicators (Dict): Tracks which indicators have been computed
+    """
+    
+    def __init__(self, df: pd.DataFrame, cache_size: int = 1000):
+        """
+        Initialize indicator manager
+        
+        Args:
+            df (pd.DataFrame): Price data
+            cache_size (int): Maximum cache size
+        """
+        self.df = df
+        self.cache = CalculationCache(max_size=cache_size)
+        self._computed_indicators = {}
+        
+        # Register available indicators
+        self._indicator_registry = {
+            'sma': self._compute_sma,
+            'ema': self._compute_ema,
+            'rsi': self._compute_rsi,
+            'macd': self._compute_macd,
+            'bollinger_bands': self._compute_bollinger_bands,
+            'atr': self._compute_atr,
+            'volume_profile': self._compute_volume_profile
+        }
+    
+    def get_indicator(self, 
+                     name: str, 
+                     params: Dict[str, Any] = None) -> Union[pd.Series, pd.DataFrame]:
+        """
+        Get indicator values, computing only if necessary
+        
+        Args:
+            name (str): Indicator name
+            params (Dict[str, Any]): Indicator parameters
+            
+        Returns:
+            Union[pd.Series, pd.DataFrame]: Indicator values
+            
+        Raises:
+            ValueError: If indicator is not supported
+        """
+        if name not in self._indicator_registry:
+            raise ValueError(f"Unsupported indicator: {name}")
+            
+        # Create cache key
+        cache_key = self._create_cache_key(name, params)
+        
+        # Check cache first
+        cached_result = self.cache.get(cache_key)
+        if cached_result is not None:
+            return cached_result
+        
+        # Compute indicator
+        params = params or {}
+        result = self._indicator_registry[name](**params)
+        
+        # Cache result
+        self.cache.set(cache_key, result)
+        self._computed_indicators[cache_key] = True
+        
+        return result
+    
+    def _create_cache_key(self, name: str, params: Optional[Dict[str, Any]]) -> str:
+        """
+        Create unique cache key for indicator
+        
+        Args:
+            name (str): Indicator name
+            params (Optional[Dict[str, Any]]): Indicator parameters
+            
+        Returns:
+            str: Cache key
+        """
+        if params:
+            param_str = '_'.join(f"{k}_{v}" for k, v in sorted(params.items()))
+            return f"{name}_{param_str}"
+        return name
+    
+    def _compute_sma(self, period: int = 20) -> pd.Series:
+        """Compute Simple Moving Average"""
+        return self.df['Close'].rolling(window=period).mean()
+    
+    def _compute_ema(self, period: int = 20) -> pd.Series:
+        """Compute Exponential Moving Average"""
+        return self.df['Close'].ewm(span=period, adjust=False).mean()
+    
+    def _compute_rsi(self, period: int = 14) -> pd.Series:
+        """Compute Relative Strength Index"""
+        delta = self.df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        
+        rs = gain / loss
+        return 100 - (100 / (1 + rs))
+    
+    def _compute_macd(self, 
+                     fast_period: int = 12, 
+                     slow_period: int = 26, 
+                     signal_period: int = 9) -> pd.DataFrame:
+        """Compute MACD"""
+        fast_ema = self._compute_ema(fast_period)
+        slow_ema = self._compute_ema(slow_period)
+        macd_line = fast_ema - slow_ema
+        signal_line = macd_line.ewm(span=signal_period, adjust=False).mean()
+        
+        return pd.DataFrame({
+            'macd': macd_line,
+            'signal': signal_line,
+            'histogram': macd_line - signal_line
+        })
+    
+    def _compute_bollinger_bands(self, 
+                               period: int = 20, 
+                               std_dev: float = 2.0) -> pd.DataFrame:
+        """Compute Bollinger Bands"""
+        middle_band = self._compute_sma(period)
+        std = self.df['Close'].rolling(window=period).std()
+        
+        return pd.DataFrame({
+            'upper': middle_band + (std * std_dev),
+            'middle': middle_band,
+            'lower': middle_band - (std * std_dev)
+        })
+    
+    def _compute_atr(self, period: int = 14) -> pd.Series:
+        """Compute Average True Range"""
+        high = self.df['High']
+        low = self.df['Low']
+        close = self.df['Close']
+        
+        tr1 = high - low
+        tr2 = abs(high - close.shift())
+        tr3 = abs(low - close.shift())
+        
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        return tr.rolling(window=period).mean()
+    
+    def _compute_volume_profile(self, bins: int = 50) -> pd.DataFrame:
+        """Compute Volume Profile"""
+        if 'Volume' not in self.df.columns:
+            return pd.DataFrame()
+            
+        price_bins = pd.cut(self.df['Close'], bins=bins)
+        volume_profile = self.df.groupby(price_bins)['Volume'].sum()
+        
+        return pd.DataFrame({
+            'price_level': volume_profile.index.mid,
+            'volume': volume_profile.values
+        })
+    
+    def precompute_indicators(self, indicators: List[Dict[str, Any]]) -> None:
+        """
+        Precompute multiple indicators
+        
+        Args:
+            indicators (List[Dict[str, Any]]): List of indicators to compute
+        """
+        for indicator in indicators:
+            name = indicator['name']
+            params = indicator.get('params', {})
+            self.get_indicator(name, params)
+    
+    def clear_cache(self) -> None:
+        """Clear indicator cache"""
+        self.cache.clear()
+        self._computed_indicators.clear()

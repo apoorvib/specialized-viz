@@ -6933,3 +6933,198 @@ class IndicatorManager:
         """Clear indicator cache"""
         self.cache.clear()
         self._computed_indicators.clear()
+        
+class DataManager:
+    """
+    Manages data chunking and memory optimization for large datasets
+    
+    Attributes:
+        df (pd.DataFrame): Full price data
+        chunk_size (int): Size of data chunks
+        max_chunks (int): Maximum number of chunks to keep in memory
+        _chunks (Dict): Storage for data chunks
+        _chunk_access_times (Dict): Last access times for chunks
+    """
+    
+    def __init__(self, 
+                 df: pd.DataFrame, 
+                 chunk_size: int = 1000,
+                 max_chunks: int = 10):
+        """
+        Initialize data manager
+        
+        Args:
+            df (pd.DataFrame): Price data
+            chunk_size (int): Number of rows per chunk
+            max_chunks (int): Maximum chunks to keep in memory
+        """
+        self.df = df
+        self.chunk_size = chunk_size
+        self.max_chunks = max_chunks
+        self._chunks = {}
+        self._chunk_access_times = {}
+        self.lock = threading.Lock()
+        
+        # Create chunk index
+        self._create_chunk_index()
+    
+    def _create_chunk_index(self) -> None:
+        """Create index of data chunks"""
+        self.total_chunks = (len(self.df) + self.chunk_size - 1) // self.chunk_size
+        self.chunk_boundaries = [
+            (i * self.chunk_size, min((i + 1) * self.chunk_size, len(self.df)))
+            for i in range(self.total_chunks)
+        ]
+    
+    def get_data_chunk(self, chunk_id: int) -> pd.DataFrame:
+        """
+        Get a specific data chunk
+        
+        Args:
+            chunk_id (int): Chunk identifier
+            
+        Returns:
+            pd.DataFrame: Data chunk
+            
+        Raises:
+            ValueError: If chunk_id is invalid
+        """
+        if not 0 <= chunk_id < self.total_chunks:
+            raise ValueError(f"Invalid chunk_id: {chunk_id}")
+            
+        with self.lock:
+            # Check if chunk is in memory
+            if chunk_id in self._chunks:
+                self._update_chunk_access(chunk_id)
+                return self._chunks[chunk_id]
+            
+            # Load chunk into memory
+            return self._load_chunk(chunk_id)
+    
+    def get_data_range(self, 
+                      start_date: pd.Timestamp,
+                      end_date: pd.Timestamp) -> pd.DataFrame:
+        """
+        Get data for specified date range
+        
+        Args:
+            start_date (pd.Timestamp): Start date
+            end_date (pd.Timestamp): End date
+            
+        Returns:
+            pd.DataFrame: Data for specified range
+        """
+        # Find relevant chunks
+        start_chunk = self._find_chunk_for_date(start_date)
+        end_chunk = self._find_chunk_for_date(end_date)
+        
+        chunks_data = []
+        for chunk_id in range(start_chunk, end_chunk + 1):
+            chunk_data = self.get_data_chunk(chunk_id)
+            chunks_data.append(chunk_data)
+        
+        # Combine chunks and filter date range
+        combined_data = pd.concat(chunks_data)
+        return combined_data[start_date:end_date]
+    
+    def _load_chunk(self, chunk_id: int) -> pd.DataFrame:
+        """
+        Load a data chunk into memory
+        
+        Args:
+            chunk_id (int): Chunk identifier
+            
+        Returns:
+            pd.DataFrame: Loaded data chunk
+        """
+        # Check if we need to free memory
+        if len(self._chunks) >= self.max_chunks:
+            self._evict_least_used_chunk()
+        
+        # Load chunk
+        start_idx, end_idx = self.chunk_boundaries[chunk_id]
+        chunk_data = self.df.iloc[start_idx:end_idx].copy()
+        
+        # Store in memory
+        self._chunks[chunk_id] = chunk_data
+        self._update_chunk_access(chunk_id)
+        
+        return chunk_data
+    
+    def _update_chunk_access(self, chunk_id: int) -> None:
+        """
+        Update last access time for chunk
+        
+        Args:
+            chunk_id (int): Chunk identifier
+        """
+        self._chunk_access_times[chunk_id] = time.time()
+    
+    def _evict_least_used_chunk(self) -> None:
+        """Remove least recently used chunk from memory"""
+        if not self._chunk_access_times:
+            return
+            
+        oldest_chunk = min(self._chunk_access_times.items(), 
+                          key=lambda x: x[1])[0]
+        
+        self._chunks.pop(oldest_chunk, None)
+        self._chunk_access_times.pop(oldest_chunk, None)
+    
+    def _find_chunk_for_date(self, date: pd.Timestamp) -> int:
+        """
+        Find chunk ID containing specified date
+        
+        Args:
+            date (pd.Timestamp): Date to find
+            
+        Returns:
+            int: Chunk ID
+            
+        Raises:
+            ValueError: If date is out of range
+        """
+        if date < self.df.index[0] or date > self.df.index[-1]:
+            raise ValueError(f"Date {date} out of range")
+            
+        for chunk_id, (start_idx, end_idx) in enumerate(self.chunk_boundaries):
+            chunk_start_date = self.df.index[start_idx]
+            chunk_end_date = self.df.index[end_idx - 1]
+            
+            if chunk_start_date <= date <= chunk_end_date:
+                return chunk_id
+        
+        return self.total_chunks - 1  # Return last chunk if not found
+    
+    def optimize_memory(self) -> None:
+        """Optimize memory usage by clearing unused chunks"""
+        with self.lock:
+            current_time = time.time()
+            
+            # Remove chunks not accessed in the last hour
+            chunks_to_remove = [
+                chunk_id for chunk_id, last_access 
+                in self._chunk_access_times.items()
+                if current_time - last_access > 3600
+            ]
+            
+            for chunk_id in chunks_to_remove:
+                self._chunks.pop(chunk_id, None)
+                self._chunk_access_times.pop(chunk_id, None)
+    
+    def get_memory_usage(self) -> Dict[str, float]:
+        """
+        Get memory usage statistics
+        
+        Returns:
+            Dict[str, float]: Memory usage information
+        """
+        total_memory = sum(chunk.memory_usage(deep=True).sum() 
+                          for chunk in self._chunks.values())
+        
+        return {
+            'total_memory_mb': total_memory / 1024 / 1024,
+            'num_chunks': len(self._chunks),
+            'max_chunks': self.max_chunks,
+            'chunk_size': self.chunk_size
+        }

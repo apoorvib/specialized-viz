@@ -7362,3 +7362,366 @@ class ParallelProcessor:
             return analysis_functions[analysis_type](window=20)
         else:
             raise ValueError(f"Unsupported analysis type: {analysis_type}")
+        
+class ParallelTaskManager:
+    """
+    Manages parallel task execution with error handling and monitoring
+    
+    Attributes:
+        processor (ParallelProcessor): Parallel processor instance
+        max_queue_size (int): Maximum size of task queue
+        _task_queue (Queue): Queue for pending tasks
+        _results (Dict): Storage for task results
+        _errors (Dict): Storage for task errors
+    """
+    
+    def __init__(self, max_workers: Optional[int] = None, max_queue_size: int = 1000):
+        """
+        Initialize task manager
+        
+        Args:
+            max_workers (Optional[int]): Maximum number of worker processes
+            max_queue_size (int): Maximum size of task queue
+        """
+        self.processor = ParallelProcessor(max_workers=max_workers)
+        self.max_queue_size = max_queue_size
+        self._task_queue = Queue(maxsize=max_queue_size)
+        self._results = {}
+        self._errors = {}
+        self._lock = threading.Lock()
+        self._monitor = TaskMonitor()
+    
+    def submit_task(self, 
+                   task_id: str,
+                   operation: Callable,
+                   data: pd.DataFrame,
+                   **kwargs) -> None:
+        """
+        Submit task for parallel execution
+        
+        Args:
+            task_id (str): Unique task identifier
+            operation (Callable): Operation to perform
+            data (pd.DataFrame): Input data
+            **kwargs: Additional operation arguments
+        """
+        task = {
+            'id': task_id,
+            'operation': operation,
+            'data': data,
+            'kwargs': kwargs,
+            'status': 'pending',
+            'submit_time': time.time()
+        }
+        
+        with self._lock:
+            if self._task_queue.qsize() >= self.max_queue_size:
+                raise QueueFullError("Task queue is full")
+            
+            self._task_queue.put(task)
+            self._monitor.track_task(task_id)
+    
+    def execute_pending_tasks(self) -> None:
+        """Execute all pending tasks in parallel"""
+        pending_tasks = []
+        
+        # Collect pending tasks
+        while not self._task_queue.empty():
+            task = self._task_queue.get()
+            pending_tasks.append(task)
+            task['status'] = 'processing'
+            self._monitor.update_task_status(task['id'], 'processing')
+        
+        # Execute tasks in parallel
+        with self.processor as proc:
+            futures = []
+            for task in pending_tasks:
+                future = proc._pool.submit(
+                    self._execute_task_safely,
+                    task
+                )
+                futures.append((task['id'], future))
+            
+            # Collect results
+            for task_id, future in futures:
+                try:
+                    result = future.result()
+                    self._handle_task_success(task_id, result)
+                except Exception as e:
+                    self._handle_task_error(task_id, e)
+    
+    def _execute_task_safely(self, task: Dict[str, Any]) -> Any:
+        """
+        Execute single task with error handling
+        
+        Args:
+            task (Dict[str, Any]): Task information
+            
+        Returns:
+            Any: Task result
+            
+        Raises:
+            Exception: If task execution fails
+        """
+        try:
+            start_time = time.time()
+            result = task['operation'](task['data'], **task['kwargs'])
+            execution_time = time.time() - start_time
+            
+            self._monitor.record_execution_time(task['id'], execution_time)
+            return result
+            
+        except Exception as e:
+            self._monitor.record_error(task['id'], str(e))
+            raise
+    
+    def _handle_task_success(self, task_id: str, result: Any) -> None:
+        """
+        Handle successful task completion
+        
+        Args:
+            task_id (str): Task identifier
+            result (Any): Task result
+        """
+        with self._lock:
+            self._results[task_id] = result
+            self._monitor.update_task_status(task_id, 'completed')
+    
+    def _handle_task_error(self, task_id: str, error: Exception) -> None:
+        """
+        Handle task execution error
+        
+        Args:
+            task_id (str): Task identifier
+            error (Exception): Error that occurred
+        """
+        with self._lock:
+            self._errors[task_id] = error
+            self._monitor.update_task_status(task_id, 'failed')
+    
+    def get_task_result(self, task_id: str) -> Optional[Any]:
+        """
+        Get result of completed task
+        
+        Args:
+            task_id (str): Task identifier
+            
+        Returns:
+            Optional[Any]: Task result if available
+        """
+        return self._results.get(task_id)
+    
+    def get_task_error(self, task_id: str) -> Optional[Exception]:
+        """
+        Get error from failed task
+        
+        Args:
+            task_id (str): Task identifier
+            
+        Returns:
+            Optional[Exception]: Task error if failed
+        """
+        return self._errors.get(task_id)
+    
+    def get_task_status(self, task_id: str) -> Dict[str, Any]:
+        """
+        Get current task status
+        
+        Args:
+            task_id (str): Task identifier
+            
+        Returns:
+            Dict[str, Any]: Task status information
+        """
+        return self._monitor.get_task_status(task_id)
+    
+class TaskMonitor:
+    """
+    Monitors task execution progress and system resources
+    
+    Attributes:
+        _task_stats (Dict): Statistics for each task
+        _system_stats (Dict): System resource statistics
+        _lock (threading.Lock): Thread lock for stats updates
+    """
+    
+    def __init__(self):
+        """Initialize task monitor"""
+        self._task_stats = {}
+        self._system_stats = {
+            'cpu_usage': [],
+            'memory_usage': [],
+            'task_queue_size': []
+        }
+        self._lock = threading.Lock()
+        
+        # Start resource monitoring
+        self._start_resource_monitoring()
+    
+    def track_task(self, task_id: str) -> None:
+        """
+        Start tracking new task
+        
+        Args:
+            task_id (str): Task identifier
+        """
+        with self._lock:
+            self._task_stats[task_id] = {
+                'status': 'pending',
+                'start_time': None,
+                'end_time': None,
+                'execution_time': None,
+                'error': None,
+                'memory_peak': None,
+                'cpu_usage': None
+            }
+    
+    def update_task_status(self, task_id: str, status: str) -> None:
+        """
+        Update task status
+        
+        Args:
+            task_id (str): Task identifier
+            status (str): New status
+        """
+        with self._lock:
+            if task_id in self._task_stats:
+                self._task_stats[task_id]['status'] = status
+                
+                if status == 'processing' and not self._task_stats[task_id]['start_time']:
+                    self._task_stats[task_id]['start_time'] = time.time()
+                elif status in ['completed', 'failed']:
+                    self._task_stats[task_id]['end_time'] = time.time()
+    
+    def record_execution_time(self, task_id: str, execution_time: float) -> None:
+        """
+        Record task execution time
+        
+        Args:
+            task_id (str): Task identifier
+            execution_time (float): Execution time in seconds
+        """
+        with self._lock:
+            if task_id in self._task_stats:
+                self._task_stats[task_id]['execution_time'] = execution_time
+    
+    def record_error(self, task_id: str, error: str) -> None:
+        """
+        Record task error
+        
+        Args:
+            task_id (str): Task identifier
+            error (str): Error message
+        """
+        with self._lock:
+            if task_id in self._task_stats:
+                self._task_stats[task_id]['error'] = error
+    
+    def get_task_status(self, task_id: str) -> Dict[str, Any]:
+        """
+        Get current task status
+        
+        Args:
+            task_id (str): Task identifier
+            
+        Returns:
+            Dict[str, Any]: Task status information
+        """
+        with self._lock:
+            return self._task_stats.get(task_id, {}).copy()
+    
+    def get_system_stats(self) -> Dict[str, List[float]]:
+        """
+        Get system resource statistics
+        
+        Returns:
+            Dict[str, List[float]]: System statistics
+        """
+        with self._lock:
+            return self._system_stats.copy()
+    
+    def _start_resource_monitoring(self) -> None:
+        """Start monitoring system resources"""
+        self._monitoring_thread = threading.Thread(
+            target=self._monitor_resources,
+            daemon=True
+        )
+        self._monitoring_thread.start()
+    
+    def _monitor_resources(self) -> None:
+        """Monitor system resources periodically"""
+        while True:
+            try:
+                # Get CPU usage
+                cpu_percent = psutil.cpu_percent(interval=1)
+                
+                # Get memory usage
+                memory = psutil.virtual_memory()
+                memory_percent = memory.percent
+                
+                with self._lock:
+                    self._system_stats['cpu_usage'].append(cpu_percent)
+                    self._system_stats['memory_usage'].append(memory_percent)
+                    
+                    # Keep only last hour of data (3600 seconds)
+                    max_samples = 3600
+                    for key in self._system_stats:
+                        if len(self._system_stats[key]) > max_samples:
+                            self._system_stats[key] = self._system_stats[key][-max_samples:]
+                
+                time.sleep(1)  # Update every second
+                
+            except Exception as e:
+                print(f"Error monitoring resources: {str(e)}")
+                time.sleep(5)  # Wait before retrying
+    
+    def get_resource_usage(self, task_id: str) -> Dict[str, float]:
+        """
+        Get resource usage for specific task
+        
+        Args:
+            task_id (str): Task identifier
+            
+        Returns:
+            Dict[str, float]: Resource usage statistics
+        """
+        with self._lock:
+            stats = self._task_stats.get(task_id, {})
+            if not stats:
+                return {}
+            
+            return {
+                'memory_peak': stats.get('memory_peak', 0),
+                'cpu_usage': stats.get('cpu_usage', 0),
+                'execution_time': stats.get('execution_time', 0)
+            }
+    
+    def get_performance_summary(self) -> Dict[str, Any]:
+        """
+        Get performance summary for all tasks
+        
+        Returns:
+            Dict[str, Any]: Performance summary
+        """
+        with self._lock:
+            total_tasks = len(self._task_stats)
+            completed_tasks = sum(1 for stats in self._task_stats.values() 
+                                if stats['status'] == 'completed')
+            failed_tasks = sum(1 for stats in self._task_stats.values() 
+                             if stats['status'] == 'failed')
+            
+            execution_times = [stats['execution_time'] 
+                             for stats in self._task_stats.values() 
+                             if stats['execution_time'] is not None]
+            
+            return {
+                'total_tasks': total_tasks,
+                'completed_tasks': completed_tasks,
+                'failed_tasks': failed_tasks,
+                'average_execution_time': np.mean(execution_times) if execution_times else 0,
+                'max_execution_time': max(execution_times) if execution_times else 0,
+                'current_cpu_usage': self._system_stats['cpu_usage'][-1] 
+                    if self._system_stats['cpu_usage'] else 0,
+                'current_memory_usage': self._system_stats['memory_usage'][-1] 
+                    if self._system_stats['memory_usage'] else 0
+            }

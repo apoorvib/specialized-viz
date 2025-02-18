@@ -149,6 +149,567 @@ class VisualizationConfig:
         """
         return cls(**config_dict)
     
+class VisualizationCache:
+    """
+    Cache for visualization components and calculations
+    
+    Attributes:
+        max_size (int): Maximum number of items in cache
+        ttl (int): Time to live for cache items in seconds
+        _cache (Dict): Main cache storage
+        _metadata (Dict): Cache item metadata
+        _lock (threading.Lock): Thread lock for cache operations
+    """
+    
+    def __init__(self, max_size: int = 100, ttl: int = 3600):
+        """
+        Initialize visualization cache
+        
+        Args:
+            max_size (int): Maximum cache size
+            ttl (int): Cache item time to live in seconds
+        """
+        self.max_size = max_size
+        self.ttl = ttl
+        self._cache = {}
+        self._metadata = {}
+        self._lock = threading.Lock()
+    
+    def get_figure(self, key: str) -> Optional[go.Figure]:
+        """
+        Get cached figure
+        
+        Args:
+            key (str): Cache key
+            
+        Returns:
+            Optional[go.Figure]: Cached figure or None if not found/expired
+        """
+        with self._lock:
+            if key not in self._cache:
+                return None
+            
+            # Check if item has expired
+            if self._is_expired(key):
+                self._remove_item(key)
+                return None
+            
+            # Update access metadata
+            self._metadata[key]['last_access'] = time.time()
+            self._metadata[key]['access_count'] += 1
+            
+            return self._cache[key]
+    
+    def cache_figure(self, key: str, figure: go.Figure) -> None:
+        """
+        Cache a figure
+        
+        Args:
+            key (str): Cache key
+            figure (go.Figure): Figure to cache
+        """
+        with self._lock:
+            current_time = time.time()
+            
+            # Remove expired items
+            self._remove_expired()
+            
+            # Check if we need to make room
+            if len(self._cache) >= self.max_size:
+                self._evict_lru_item()
+            
+            # Add new item
+            self._cache[key] = figure
+            self._metadata[key] = {
+                'created_at': current_time,
+                'last_access': current_time,
+                'access_count': 0,
+                'size': self._estimate_figure_size(figure)
+            }
+    
+    def _is_expired(self, key: str) -> bool:
+        """
+        Check if cache item has expired
+        
+        Args:
+            key (str): Cache key
+            
+        Returns:
+            bool: True if item has expired
+        """
+        current_time = time.time()
+        return current_time - self._metadata[key]['created_at'] > self.ttl
+    
+    def _remove_expired(self) -> None:
+        """Remove all expired items from cache"""
+        expired_keys = [key for key in self._cache if self._is_expired(key)]
+        for key in expired_keys:
+            self._remove_item(key)
+    
+    def _evict_lru_item(self) -> None:
+        """Remove least recently used item from cache"""
+        if not self._cache:
+            return
+            
+        lru_key = min(self._metadata.items(), 
+                     key=lambda x: x[1]['last_access'])[0]
+        self._remove_item(lru_key)
+    
+    def _remove_item(self, key: str) -> None:
+        """
+        Remove item from cache
+        
+        Args:
+            key (str): Cache key to remove
+        """
+        self._cache.pop(key, None)
+        self._metadata.pop(key, None)
+    
+    def _estimate_figure_size(self, figure: go.Figure) -> int:
+        """
+        Estimate memory size of figure
+        
+        Args:
+            figure (go.Figure): Figure to estimate
+            
+        Returns:
+            int: Estimated size in bytes
+        """
+        # Basic size estimation based on number of traces and data points
+        size = 0
+        for trace in figure.data:
+            if hasattr(trace, 'x'):
+                size += len(trace.x) * 8  # Assume 8 bytes per number
+            if hasattr(trace, 'y'):
+                size += len(trace.y) * 8
+        return size
+    
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """
+        Get cache statistics
+        
+        Returns:
+            Dict[str, Any]: Cache statistics
+        """
+        with self._lock:
+            total_size = sum(meta['size'] for meta in self._metadata.values())
+            return {
+                'item_count': len(self._cache),
+                'total_size_bytes': total_size,
+                'hit_count': sum(meta['access_count'] for meta in self._metadata.values()),
+                'max_size': self.max_size,
+                'ttl': self.ttl
+            }
+    
+    def clear(self) -> None:
+        """Clear all items from cache"""
+        with self._lock:
+            self._cache.clear()
+            self._metadata.clear()
+            
+class BaseVisualizationSettings:
+    """
+    Base settings and utilities for visualizations
+    
+    Attributes:
+        config (VisualizationConfig): Visualization configuration
+        cache (VisualizationCache): Visualization cache
+    """
+    
+    def __init__(self, config: Optional[VisualizationConfig] = None):
+        """
+        Initialize base visualization settings
+        
+        Args:
+            config (Optional[VisualizationConfig]): Visualization configuration
+        """
+        self.config = config or VisualizationConfig()
+        self.cache = VisualizationCache()
+        
+    def apply_default_layout(self, fig: go.Figure) -> go.Figure:
+        """
+        Apply default layout settings to figure
+        
+        Args:
+            fig (go.Figure): Plotly figure
+            
+        Returns:
+            go.Figure: Figure with default layout applied
+        """
+        fig.update_layout(
+            template=self.config.theme,
+            height=self.config.default_height,
+            width=self.config.default_width,
+            font=dict(
+                family=self.config.fonts['family'],
+                size=self.config.fonts['sizes']['axis']
+            ),
+            showlegend=True,
+            legend=dict(
+                orientation=self.config.layout['legend']['orientation'],
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1,
+                font=dict(size=self.config.fonts['sizes']['label'])
+            ),
+            margin=dict(
+                t=self.config.layout['padding']['top'],
+                r=self.config.layout['padding']['right'],
+                b=self.config.layout['padding']['bottom'],
+                l=self.config.layout['padding']['left']
+            )
+        )
+        
+        # Apply grid settings if enabled
+        if self.config.show_grid:
+            fig.update_layout(
+                xaxis=dict(
+                    showgrid=True,
+                    gridwidth=self.config.grid_settings['width'],
+                    gridcolor=self.config.grid_settings['color'],
+                    zeroline=False
+                ),
+                yaxis=dict(
+                    showgrid=True,
+                    gridwidth=self.config.grid_settings['width'],
+                    gridcolor=self.config.grid_settings['color'],
+                    zeroline=False
+                )
+            )
+        
+        return fig
+    
+    def create_annotation(self, 
+                         text: str,
+                         x: Union[float, str],
+                         y: float,
+                         is_pattern: bool = False) -> Dict[str, Any]:
+        """
+        Create figure annotation with default settings
+        
+        Args:
+            text (str): Annotation text
+            x (Union[float, str]): X-coordinate
+            y (float): Y-coordinate
+            is_pattern (bool): Whether annotation is for a pattern
+            
+        Returns:
+            Dict[str, Any]: Annotation settings
+        """
+        return dict(
+            text=text,
+            x=x,
+            y=y,
+            showarrow=True,
+            arrowhead=2,
+            arrowsize=1,
+            arrowwidth=self.config.annotation_settings['arrow']['width'],
+            arrowcolor=self.config.annotation_settings['arrow']['color'],
+            bgcolor=self.config.annotation_settings['style']['background_color'],
+            bordercolor=self.config.annotation_settings['style']['border_color'],
+            borderwidth=self.config.annotation_settings['style']['border_width'],
+            font=dict(
+                size=self.config.annotation_font_size,
+                color=self.config.color_scheme['text']
+            ),
+            opacity=self.config.pattern_opacity if is_pattern else 1.0
+        )
+    
+    def get_color_for_value(self, 
+                           value: float, 
+                           is_bullish: bool = True) -> str:
+        """
+        Get appropriate color for a value
+        
+        Args:
+            value (float): Value to get color for
+            is_bullish (bool): Whether context is bullish
+            
+        Returns:
+            str: Color code
+        """
+        if value > 0:
+            return self.config.color_scheme['bullish' if is_bullish else 'bearish']
+        elif value < 0:
+            return self.config.color_scheme['bearish' if is_bullish else 'bullish']
+        return self.config.color_scheme['neutral']
+    
+    def create_hover_template(self,
+                            fields: List[Tuple[str, str]],
+                            include_date: bool = True) -> str:
+        """
+        Create hover template with specified fields
+        
+        Args:
+            fields (List[Tuple[str, str]]): List of (label, value) pairs
+            include_date (bool): Whether to include date
+            
+        Returns:
+            str: Hover template string
+        """
+        template = []
+        if include_date:
+            template.append('<b>Date</b>: %{x}<br>')
+            
+        for label, value in fields:
+            template.append(f'<b>{label}</b>: {value}<br>')
+            
+        return ''.join(template)
+    
+    def add_range_selector(self, fig: go.Figure) -> go.Figure:
+        """
+        Add default range selector to figure
+        
+        Args:
+            fig (go.Figure): Plotly figure
+            
+        Returns:
+            go.Figure: Figure with range selector
+        """
+        fig.update_layout(
+            xaxis=dict(
+                rangeselector=dict(
+                    buttons=list([
+                        dict(count=1, label="1m", step="month", stepmode="backward"),
+                        dict(count=3, label="3m", step="month", stepmode="backward"),
+                        dict(count=6, label="6m", step="month", stepmode="backward"),
+                        dict(count=1, label="YTD", step="year", stepmode="todate"),
+                        dict(count=1, label="1y", step="year", stepmode="backward"),
+                        dict(step="all")
+                    ])
+                )
+            )
+        )
+        return fig
+    
+    def format_number(self, 
+                     value: float, 
+                     precision: int = 2,
+                     prefix: str = '',
+                     suffix: str = '') -> str:
+        """
+        Format number with default settings
+        
+        Args:
+            value (float): Number to format
+            precision (int): Decimal precision
+            prefix (str): Prefix to add
+            suffix (str): Suffix to add
+            
+        Returns:
+            str: Formatted number
+        """
+        formatted = f"{value:,.{precision}f}"
+        return f"{prefix}{formatted}{suffix}"
+    
+    def create_subplot_layout(self,
+                            num_rows: int,
+                            row_heights: List[float] = None,
+                            shared_xaxis: bool = True) -> Dict[str, Any]:
+        """
+        Create subplot layout configuration
+        
+        Args:
+            num_rows (int): Number of subplot rows
+            row_heights (List[float]): Relative heights for each row
+            shared_xaxis (bool): Whether to share x-axis across subplots
+            
+        Returns:
+            Dict[str, Any]: Subplot layout configuration
+        """
+        heights = row_heights or [1/num_rows] * num_rows
+        
+        return dict(
+            rows=num_rows,
+            cols=1,
+            shared_xaxes=shared_xaxis,
+            vertical_spacing=self.config.layout['spacing']['vertical'],
+            row_heights=heights
+        )
+    
+    def style_axis(self,
+                   fig: go.Figure,
+                   title: str = '',
+                   row: int = 1,
+                   axis: str = 'y',
+                   log_scale: bool = False) -> go.Figure:
+        """
+        Apply consistent axis styling
+        
+        Args:
+            fig (go.Figure): Plotly figure
+            title (str): Axis title
+            row (int): Subplot row number
+            axis (str): Axis to style ('x' or 'y')
+            log_scale (bool): Whether to use log scale
+            
+        Returns:
+            go.Figure: Styled figure
+        """
+        axis_dict = dict(
+            title=title,
+            title_font=dict(
+                size=self.config.fonts['sizes']['axis'],
+                color=self.config.color_scheme['text']
+            ),
+            showgrid=self.config.show_grid,
+            gridcolor=self.config.grid_settings['color'],
+            gridwidth=self.config.grid_settings['width'],
+            type='log' if log_scale else 'linear'
+        )
+        
+        if axis == 'x':
+            fig.update_xaxes(axis_dict, row=row)
+        else:
+            fig.update_yaxes(axis_dict, row=row)
+            
+        return fig
+    
+    def add_patterns_overlay(self,
+                           fig: go.Figure,
+                           patterns: Dict[str, pd.Series],
+                           row: int = 1) -> go.Figure:
+        """
+        Add pattern markers overlay to figure
+        
+        Args:
+            fig (go.Figure): Plotly figure
+            patterns (Dict[str, pd.Series]): Pattern signals
+            row (int): Subplot row number
+            
+        Returns:
+            go.Figure: Figure with patterns overlay
+        """
+        for pattern_name, signal in patterns.items():
+            if isinstance(signal, tuple):
+                # Handle bullish/bearish patterns
+                bullish, bearish = signal
+                
+                # Add bullish markers
+                if bullish.any():
+                    fig.add_trace(
+                        go.Scatter(
+                            x=bullish.index[bullish],
+                            y=self.df['Low'][bullish] * 0.99,
+                            mode='markers',
+                            marker=dict(
+                                symbol='triangle-up',
+                                size=10,
+                                color=self.config.color_scheme['bullish']
+                            ),
+                            name=f'{pattern_name} (Bullish)',
+                            opacity=self.config.pattern_opacity
+                        ),
+                        row=row, col=1
+                    )
+                
+                # Add bearish markers
+                if bearish.any():
+                    fig.add_trace(
+                        go.Scatter(
+                            x=bearish.index[bearish],
+                            y=self.df['High'][bearish] * 1.01,
+                            mode='markers',
+                            marker=dict(
+                                symbol='triangle-down',
+                                size=10,
+                                color=self.config.color_scheme['bearish']
+                            ),
+                            name=f'{pattern_name} (Bearish)',
+                            opacity=self.config.pattern_opacity
+                        ),
+                        row=row, col=1
+                    )
+            else:
+                # Handle neutral patterns
+                if signal.any():
+                    fig.add_trace(
+                        go.Scatter(
+                            x=signal.index[signal],
+                            y=self.df['Close'][signal],
+                            mode='markers',
+                            marker=dict(
+                                symbol='circle',
+                                size=8,
+                                color=self.config.color_scheme['neutral']
+                            ),
+                            name=pattern_name,
+                            opacity=self.config.pattern_opacity
+                        ),
+                        row=row, col=1
+                    )
+        
+        return fig
+    
+    def create_color_scale(self,
+                          start_color: str,
+                          end_color: str,
+                          n_colors: int = 10) -> List[str]:
+        """
+        Create a continuous color scale
+        
+        Args:
+            start_color (str): Starting color
+            end_color (str): Ending color
+            n_colors (int): Number of colors in scale
+            
+        Returns:
+            List[str]: List of color codes
+        """
+        def hex_to_rgb(hex_color: str) -> Tuple[int, int, int]:
+            hex_color = hex_color.lstrip('#')
+            return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+        
+        def rgb_to_hex(rgb: Tuple[int, int, int]) -> str:
+            return '#{:02x}{:02x}{:02x}'.format(*rgb)
+        
+        start_rgb = hex_to_rgb(start_color)
+        end_rgb = hex_to_rgb(end_color)
+        
+        colors = []
+        for i in range(n_colors):
+            t = i / (n_colors - 1)
+            rgb = tuple(int(start_rgb[j] + t * (end_rgb[j] - start_rgb[j])) 
+                       for j in range(3))
+            colors.append(rgb_to_hex(rgb))
+        
+        return colors
+    
+    def apply_interactive_features(self, fig: go.Figure) -> go.Figure:
+        """
+        Apply interactive features to figure
+        
+        Args:
+            fig (go.Figure): Plotly figure
+            
+        Returns:
+            go.Figure: Figure with interactive features
+        """
+        if self.config.interactive_settings['enabled']:
+            fig.update_layout(
+                hovermode='x unified',
+                hoverlabel=dict(
+                    bgcolor=self.config.interactive_settings['tooltip']['background_color'],
+                    bordercolor=self.config.interactive_settings['tooltip']['border_color'],
+                    font=dict(
+                        family=self.config.fonts['family'],
+                        size=self.config.fonts['sizes']['label']
+                    )
+                )
+            )
+            
+            if self.config.interactive_settings['animation']['enabled']:
+                fig.update_layout(
+                    transition=dict(
+                        duration=self.config.interactive_settings['animation']['duration'],
+                        easing=self.config.interactive_settings['animation']['easing']
+                    )
+                )
+        
+        return fig
+
+    
 class CandlestickVisualizer:
     def __init__(self, df: pd.DataFrame, config: Optional[VisualizationConfig] = None):
         """

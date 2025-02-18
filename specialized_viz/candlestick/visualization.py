@@ -9137,3 +9137,153 @@ class MultipleTimeframeSynchronizer:
                                 (combined != 0).mean(axis=1))
         
         return combined
+
+    def confirm_patterns_across_timeframes(self,
+                                         pattern_type: str,
+                                         min_confirmations: int = 2) -> pd.DataFrame:
+        """
+        Confirm pattern signals across multiple timeframes
+        
+        Args:
+            pattern_type (str): Type of pattern to analyze
+            min_confirmations (int): Minimum timeframes for confirmation
+            
+        Returns:
+            pd.DataFrame: Confirmed patterns with metadata
+        """
+        # Get patterns for each timeframe
+        pattern_signals = {}
+        for tf, df in self.timeframes.items():
+            signals = self._detect_patterns(df, pattern_type)
+            if isinstance(signals, tuple):
+                pattern_signals[tf] = {
+                    'bullish': signals[0],
+                    'bearish': signals[1]
+                }
+            else:
+                pattern_signals[tf] = {'neutral': signals}
+        
+        # Find confirmed patterns
+        confirmed_patterns = []
+        base_df = self.timeframes['1D']
+        
+        for idx in base_df.index:
+            confirmations = {
+                'bullish': 0,
+                'bearish': 0,
+                'neutral': 0
+            }
+            
+            # Count confirmations across timeframes
+            for tf, signals in pattern_signals.items():
+                for direction, signal in signals.items():
+                    if idx in signal.index and signal[idx]:
+                        confirmations[direction] += 1
+            
+            # Record confirmed patterns
+            for direction, count in confirmations.items():
+                if count >= min_confirmations:
+                    confirmed_patterns.append({
+                        'date': idx,
+                        'pattern': pattern_type,
+                        'direction': direction,
+                        'confirmations': count,
+                        'timeframes': [
+                            tf for tf, signals in pattern_signals.items()
+                            if direction in signals and 
+                            idx in signals[direction].index and 
+                            signals[direction][idx]
+                        ],
+                        'price': base_df['Close'][idx]
+                    })
+        
+        return pd.DataFrame(confirmed_patterns)
+
+    def filter_signals(self,
+                      signals: pd.DataFrame,
+                      filter_type: str = 'consensus',
+                      threshold: float = 0.7) -> pd.DataFrame:
+        """
+        Filter signals based on specified criteria
+        
+        Args:
+            signals (pd.DataFrame): Signal data
+            filter_type (str): Type of filter to apply
+            threshold (float): Filter threshold
+            
+        Returns:
+            pd.DataFrame: Filtered signals
+        """
+        if filter_type == 'consensus':
+            # Filter based on timeframe consensus
+            mask = signals['confidence'] >= threshold
+            return signals[mask]
+            
+        elif filter_type == 'strength':
+            # Filter based on signal strength
+            mask = abs(signals['strength']) >= threshold
+            return signals[mask]
+            
+        elif filter_type == 'persistence':
+            # Filter based on signal persistence
+            persistence = signals.rolling(window=3).mean()
+            mask = abs(persistence['strength']) >= threshold
+            return signals[mask]
+        
+        return signals
+
+    def get_timeframe_alignment(self) -> pd.DataFrame:
+        """
+        Calculate alignment of trends across timeframes
+        
+        Returns:
+            pd.DataFrame: Trend alignment analysis
+        """
+        trends = {}
+        
+        for tf, df in self.timeframes.items():
+            # Calculate trend indicators
+            sma_short = df['Close'].rolling(window=20).mean()
+            sma_long = df['Close'].rolling(window=50).mean()
+            
+            trends[tf] = pd.Series(
+                np.where(sma_short > sma_long, 1,
+                        np.where(sma_short < sma_long, -1, 0)),
+                index=df.index
+            )
+        
+        # Combine trends
+        alignment = pd.DataFrame(trends)
+        
+        # Calculate alignment metrics
+        alignment['consensus'] = alignment.mean(axis=1)
+        alignment['agreement'] = (alignment != 0).mean(axis=1)
+        
+        return alignment
+
+    def synchronize_regime_analysis(self) -> pd.DataFrame:
+        """
+        Synchronize market regime analysis across timeframes
+        
+        Returns:
+            pd.DataFrame: Synchronized regime analysis
+        """
+        regimes = {}
+        
+        for tf, df in self.timeframes.items():
+            analyzer = MarketRegimeAnalyzer(df)
+            regime_data = analyzer.analyze_market_regime()
+            regimes[tf] = pd.Series(
+                [r.regime_type for r in regime_data],
+                index=df.index
+            )
+        
+        # Combine regime data
+        combined_regimes = pd.DataFrame(regimes)
+        
+        # Add regime consistency
+        combined_regimes['consistency'] = (
+            combined_regimes.apply(lambda x: x.value_counts().iloc[0] / len(x), axis=1)
+        )
+        
+        return combined_regimes

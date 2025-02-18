@@ -5372,6 +5372,185 @@ class MarketRegimeAnalyzer:
         
         return stability_metrics
 
+    def analyze_transition_drivers(self, 
+                                current_regime: MarketRegime,
+                                window_size: int = 20) -> Dict[str, Any]:
+        """
+        Analyze potential drivers of regime transitions
+        
+        Args:
+            current_regime (MarketRegime): Current market regime
+            window_size (int): Analysis window size
+            
+        Returns:
+            Dict[str, Any]: Transition driver analysis
+        """
+        latest_data = self.df.iloc[-window_size:]
+        
+        # Analyze various potential transition drivers
+        drivers = {
+            'volatility_pressure': self._analyze_volatility_pressure(latest_data),
+            'trend_exhaustion': self._analyze_trend_exhaustion(latest_data),
+            'volume_anomalies': self._analyze_volume_anomalies(latest_data),
+            'momentum_divergence': self._analyze_momentum_divergence(latest_data),
+            'support_resistance_tests': self._analyze_sr_tests(latest_data)
+        }
+        
+        # Calculate transition risk score
+        transition_risk = self._calculate_transition_risk(drivers)
+        drivers['transition_risk'] = transition_risk
+        
+        # Identify most likely transition scenarios
+        drivers['likely_scenarios'] = self._identify_transition_scenarios(
+            current_regime, drivers)
+        
+        return drivers
+
+    def _analyze_volatility_pressure(self, data: pd.DataFrame) -> Dict[str, float]:
+        """
+        Analyze building volatility pressure
+        
+        Args:
+            data (pd.DataFrame): Price data
+            
+        Returns:
+            Dict[str, float]: Volatility pressure metrics
+        """
+        returns = data['Close'].pct_change()
+        
+        # Calculate volatility metrics
+        current_vol = returns.std()
+        historical_vol = returns.rolling(window=50).std().mean()
+        
+        # Calculate volatility compression/expansion
+        bb_width = self._calculate_bollinger_bandwidth(data['Close'])
+        compression_ratio = bb_width.iloc[-1] / bb_width.mean()
+        
+        # Detect volatility clusters
+        high_vol_clusters = self._detect_volatility_clusters(returns)
+        
+        return {
+            'current_volatility': current_vol,
+            'volatility_ratio': current_vol / historical_vol,
+            'compression_ratio': compression_ratio,
+            'volatility_clusters': high_vol_clusters,
+            'pressure_score': self._calculate_volatility_pressure_score(
+                current_vol, historical_vol, compression_ratio)
+        }
+
+    def _analyze_trend_exhaustion(self, data: pd.DataFrame) -> Dict[str, float]:
+        """
+        Analyze signs of trend exhaustion
+        
+        Args:
+            data (pd.DataFrame): Price data
+            
+        Returns:
+            Dict[str, float]: Trend exhaustion metrics
+        """
+        # Calculate trend metrics
+        price = data['Close']
+        returns = price.pct_change()
+        
+        # Calculate momentum
+        rsi = self._calculate_rsi(price)
+        macd, signal = self._calculate_macd_with_signal(price)
+        
+        # Detect momentum divergence
+        price_trend = price.iloc[-1] > price.iloc[-5]  # Simple 5-period trend
+        momentum_trend = rsi.iloc[-1] > rsi.iloc[-5]
+        
+        # Calculate trend strength
+        trend_strength = abs(price.iloc[-1] / price.mean() - 1)
+        
+        # Detect failed swings
+        failed_swings = self._detect_failed_swings(data)
+        
+        return {
+            'momentum_divergence': price_trend != momentum_trend,
+            'trend_strength': trend_strength,
+            'failed_swings': failed_swings,
+            'exhaustion_score': self._calculate_exhaustion_score(
+                price_trend, momentum_trend, trend_strength, failed_swings)
+        }
+
+    def _analyze_volume_anomalies(self, data: pd.DataFrame) -> Dict[str, float]:
+        """
+        Analyze volume anomalies and patterns
+        
+        Args:
+            data (pd.DataFrame): Price data
+            
+        Returns:
+            Dict[str, float]: Volume anomaly metrics
+        """
+        if 'Volume' not in data.columns:
+            return {'anomaly_score': 0.5}
+        
+        volume = data['Volume']
+        price = data['Close']
+        
+        # Calculate volume metrics
+        volume_ma = volume.rolling(window=10).mean()
+        relative_volume = volume / volume_ma
+        
+        # Detect volume spikes
+        volume_spikes = (relative_volume > 2).sum()
+        
+        # Analyze price-volume relationship
+        price_volume_correlation = price.corr(volume)
+        
+        # Detect volume climax
+        volume_climax = self._detect_volume_climax(data)
+        
+        return {
+            'relative_volume': relative_volume.iloc[-1],
+            'volume_spikes': volume_spikes,
+            'price_volume_correlation': price_volume_correlation,
+            'volume_climax': volume_climax,
+            'anomaly_score': self._calculate_volume_anomaly_score(
+                relative_volume.iloc[-1], volume_spikes, price_volume_correlation)
+        }
+
+    def _analyze_momentum_divergence(self, data: pd.DataFrame) -> Dict[str, float]:
+        """
+        Analyze momentum divergences
+        
+        Args:
+            data (pd.DataFrame): Price data
+            
+        Returns:
+            Dict[str, float]: Momentum divergence metrics
+        """
+        price = data['Close']
+        
+        # Calculate various momentum indicators
+        rsi = self._calculate_rsi(price)
+        macd, signal = self._calculate_macd_with_signal(price)
+        
+        # Calculate price swings
+        price_highs = self._find_swing_highs(data)
+        price_lows = self._find_swing_lows(data)
+        
+        # Calculate momentum swings
+        rsi_highs = self._find_swing_highs(pd.DataFrame({'Close': rsi}))
+        rsi_lows = self._find_swing_lows(pd.DataFrame({'Close': rsi}))
+        
+        # Detect regular and hidden divergences
+        regular_divergence = self._detect_regular_divergence(
+            price_highs, price_lows, rsi_highs, rsi_lows)
+        hidden_divergence = self._detect_hidden_divergence(
+            price_highs, price_lows, rsi_highs, rsi_lows)
+        
+        return {
+            'regular_divergence': regular_divergence,
+            'hidden_divergence': hidden_divergence,
+            'rsi_trend': rsi.iloc[-1] - rsi.iloc[-5],
+            'macd_trend': macd.iloc[-1] - macd.iloc[-5],
+            'divergence_score': self._calculate_divergence_score(
+                regular_divergence, hidden_divergence)
+        }
+
     def _analyze_volatility_stability(self, data: pd.DataFrame) -> float:
         """
         Analyze stability of volatility

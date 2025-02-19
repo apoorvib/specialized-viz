@@ -9287,3 +9287,183 @@ class MultipleTimeframeSynchronizer:
         )
         
         return combined_regimes
+    
+class DrawingTools:
+    """
+    Interactive drawing tools for technical analysis
+    
+    Attributes:
+        fig (go.Figure): Plotly figure
+        config (VisualizationConfig): Visualization configuration
+        drawings (Dict): Storage for drawing objects
+    """
+    
+    def __init__(self, fig: go.Figure, config: Optional[VisualizationConfig] = None):
+        """
+        Initialize drawing tools
+        
+        Args:
+            fig (go.Figure): Plotly figure to draw on
+            config (Optional[VisualizationConfig]): Visualization configuration
+        """
+        self.fig = fig
+        self.config = config or VisualizationConfig()
+        self.drawings = {
+            'trendlines': [],
+            'horizontal_lines': [],
+            'fibonacci': [],
+            'rectangles': [],
+            'text': []
+        }
+    
+    def add_trendline(self,
+                     points: List[Tuple[Union[str, float], float]],
+                     extend: bool = True,
+                     style: Dict[str, Any] = None) -> None:
+        """
+        Add trendline to chart
+        
+        Args:
+            points (List[Tuple]): List of (x, y) coordinates
+            extend (bool): Whether to extend line
+            style (Dict[str, Any]): Line style settings
+        """
+        default_style = {
+            'color': self.config.color_scheme['neutral'],
+            'width': 1,
+            'dash': 'solid'
+        }
+        style = {**default_style, **(style or {})}
+        
+        x_values, y_values = zip(*points)
+        
+        if extend:
+            # Extend line in both directions
+            x_range = self.fig.layout.xaxis.range
+            slope = (y_values[1] - y_values[0]) / (x_values[1] - x_values[0])
+            
+            # Calculate extended points
+            x_ext = [x_range[0], x_range[1]]
+            y_ext = [
+                y_values[0] + slope * (x_range[0] - x_values[0]),
+                y_values[0] + slope * (x_range[1] - x_values[0])
+            ]
+        else:
+            x_ext, y_ext = x_values, y_values
+        
+        self.fig.add_shape(
+            type='line',
+            x0=x_ext[0],
+            y0=y_ext[0],
+            x1=x_ext[1],
+            y1=y_ext[1],
+            line=style
+        )
+        
+        self.drawings['trendlines'].append({
+            'points': points,
+            'extended': extend,
+            'style': style
+        })
+    
+    def add_horizontal_line(self,
+                          y_value: float,
+                          label: str = '',
+                          style: Dict[str, Any] = None) -> None:
+        """
+        Add horizontal line to chart
+        
+        Args:
+            y_value (float): Y-coordinate for line
+            label (str): Line label
+            style (Dict[str, Any]): Line style settings
+        """
+        default_style = {
+            'color': self.config.color_scheme['neutral'],
+            'width': 1,
+            'dash': 'dash'
+        }
+        style = {**default_style, **(style or {})}
+        
+        self.fig.add_hline(
+            y=y_value,
+            line=style,
+            annotation_text=label if label else None,
+            annotation=dict(
+                font_size=self.config.annotation_font_size
+            ) if label else None
+        )
+        
+        self.drawings['horizontal_lines'].append({
+            'y_value': y_value,
+            'label': label,
+            'style': style
+        })
+    
+    def add_fibonacci_retracement(self,
+                                high_point: Tuple[Union[str, float], float],
+                                low_point: Tuple[Union[str, float], float]) -> None:
+        """
+        Add Fibonacci retracement levels
+        
+        Args:
+            high_point (Tuple): High point coordinates (x, y)
+            low_point (Tuple): Low point coordinates (x, y)
+        """
+        levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1]
+        price_range = high_point[1] - low_point[1]
+        
+        for level in levels:
+            price_level = high_point[1] - price_range * level
+            self.add_horizontal_line(
+                y_value=price_level,
+                label=f'Fib {level:.3f}',
+                style={
+                    'color': self.config.color_scheme['complex'],
+                    'width': 1,
+                    'dash': 'dot'
+                }
+            )
+        
+        self.drawings['fibonacci'].append({
+            'high_point': high_point,
+            'low_point': low_point,
+            'levels': levels
+        })
+    
+    def add_rectangle(self,
+                     x_range: Tuple[Union[str, float], Union[str, float]],
+                     y_range: Tuple[float, float],
+                     style: Dict[str, Any] = None) -> None:
+        """
+        Add rectangle to chart
+        
+        Args:
+            x_range (Tuple): X-coordinates range
+            y_range (Tuple): Y-coordinates range
+            style (Dict[str, Any]): Rectangle style settings
+        """
+        default_style = {
+            'fillcolor': self.config.color_scheme['neutral'],
+            'opacity': 0.2,
+            'line': {
+                'color': self.config.color_scheme['neutral'],
+                'width': 1
+            }
+        }
+        style = {**default_style, **(style or {})}
+        
+        self.fig.add_shape(
+            type='rect',
+            x0=x_range[0],
+            y0=y_range[0],
+            x1=x_range[1],
+            y1=y_range[1],
+            **style
+        )
+        
+        self.drawings['rectangles'].append({
+            'x_range': x_range,
+            'y_range': y_range,
+            'style': style
+        })

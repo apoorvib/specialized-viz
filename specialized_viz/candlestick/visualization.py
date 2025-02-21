@@ -9467,3 +9467,163 @@ class DrawingTools:
             'y_range': y_range,
             'style': style
         })
+
+    def add_text_annotation(self,
+                          text: str,
+                          position: Tuple[Union[str, float], float],
+                          style: Dict[str, Any] = None) -> None:
+        """
+        Add text annotation to chart
+        
+        Args:
+            text (str): Annotation text
+            position (Tuple): Position coordinates (x, y)
+            style (Dict[str, Any]): Annotation style settings
+        """
+        default_style = {
+            'font_size': self.config.annotation_font_size,
+            'font_color': self.config.color_scheme['text'],
+            'bgcolor': self.config.annotation_settings['style']['background_color'],
+            'bordercolor': self.config.annotation_settings['style']['border_color'],
+            'borderwidth': self.config.annotation_settings['style']['border_width']
+        }
+        style = {**default_style, **(style or {})}
+        
+        self.fig.add_annotation(
+            text=text,
+            x=position[0],
+            y=position[1],
+            showarrow=False,
+            **style
+        )
+        
+        self.drawings['text'].append({
+            'text': text,
+            'position': position,
+            'style': style
+        })
+
+    def add_channel(self,
+                   upper_points: List[Tuple[Union[str, float], float]],
+                   lower_points: List[Tuple[Union[str, float], float]],
+                   style: Dict[str, Any] = None) -> None:
+        """
+        Add price channel
+        
+        Args:
+            upper_points (List[Tuple]): Points for upper line
+            lower_points (List[Tuple]): Points for lower line
+            style (Dict[str, Any]): Channel style settings
+        """
+        default_style = {
+            'fillcolor': self.config.color_scheme['neutral'],
+            'opacity': 0.1,
+            'line_color': self.config.color_scheme['neutral']
+        }
+        style = {**default_style, **(style or {})}
+        
+        # Add upper and lower trendlines
+        self.add_trendline(upper_points, style={'color': style['line_color']})
+        self.add_trendline(lower_points, style={'color': style['line_color']})
+        
+        # Fill the channel area
+        x_values = [p[0] for p in upper_points + lower_points[::-1]]
+        y_values = [p[1] for p in upper_points + lower_points[::-1]]
+        
+        self.fig.add_trace(
+            go.Scatter(
+                x=x_values,
+                y=y_values,
+                fill='toself',
+                fillcolor=style['fillcolor'],
+                opacity=style['opacity'],
+                line={'width': 0},
+                showlegend=False
+            )
+        )
+
+    def remove_drawing(self, drawing_id: str) -> None:
+        """
+        Remove specific drawing
+        
+        Args:
+            drawing_id (str): ID of drawing to remove
+        """
+        for category in self.drawings:
+            if drawing_id in self.drawings[category]:
+                self.drawings[category].remove(drawing_id)
+                self._redraw_figure()
+                break
+
+    def clear_all_drawings(self) -> None:
+        """Clear all drawings from chart"""
+        for category in self.drawings:
+            self.drawings[category].clear()
+        self._redraw_figure()
+
+    def _redraw_figure(self) -> None:
+        """Redraw figure with current drawings"""
+        # Store base data
+        base_data = [trace for trace in self.fig.data 
+                    if trace.name not in ['drawing', 'annotation']]
+        
+        # Clear figure
+        self.fig.data = []
+        
+        # Restore base data
+        for trace in base_data:
+            self.fig.add_trace(trace)
+        
+        # Redraw all drawings
+        for category, drawings in self.drawings.items():
+            for drawing in drawings:
+                if category == 'trendlines':
+                    self.add_trendline(
+                        drawing['points'],
+                        drawing['extended'],
+                        drawing['style']
+                    )
+                elif category == 'horizontal_lines':
+                    self.add_horizontal_line(
+                        drawing['y_value'],
+                        drawing['label'],
+                        drawing['style']
+                    )
+                elif category == 'fibonacci':
+                    self.add_fibonacci_retracement(
+                        drawing['high_point'],
+                        drawing['low_point']
+                    )
+                elif category == 'rectangles':
+                    self.add_rectangle(
+                        drawing['x_range'],
+                        drawing['y_range'],
+                        drawing['style']
+                    )
+                elif category == 'text':
+                    self.add_text_annotation(
+                        drawing['text'],
+                        drawing['position'],
+                        drawing['style']
+                    )
+
+    def save_drawings(self, filename: str) -> None:
+        """
+        Save current drawings to file
+        
+        Args:
+            filename (str): File to save drawings to
+        """
+        with open(filename, 'w') as f:
+            json.dump(self.drawings, f)
+
+    def load_drawings(self, filename: str) -> None:
+        """
+        Load drawings from file
+        
+        Args:
+            filename (str): File to load drawings from
+        """
+        with open(filename, 'r') as f:
+            self.drawings = json.load(f)
+        self._redraw_figure()

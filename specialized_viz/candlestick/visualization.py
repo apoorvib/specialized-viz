@@ -9627,3 +9627,152 @@ class DrawingTools:
         with open(filename, 'r') as f:
             self.drawings = json.load(f)
         self._redraw_figure()
+        
+class ConfigurationManager:
+    """
+    Manages visualization settings and configuration persistence
+    
+    Attributes:
+        config (VisualizationConfig): Current configuration
+        base_settings (BaseVisualizationSettings): Base visualization settings
+        _config_file (str): Configuration file path
+    """
+    
+    def __init__(self, 
+                 config: Optional[VisualizationConfig] = None,
+                 config_file: str = 'viz_config.json'):
+        """
+        Initialize configuration manager
+        
+        Args:
+            config (Optional[VisualizationConfig]): Initial configuration
+            config_file (str): Configuration file path
+        """
+        self.config = config or VisualizationConfig()
+        self.base_settings = BaseVisualizationSettings(self.config)
+        self._config_file = config_file
+        self._user_preferences = {}
+    
+    def export_configuration(self, filename: Optional[str] = None) -> None:
+        """
+        Export current configuration to file
+        
+        Args:
+            filename (Optional[str]): Export filename
+        """
+        export_file = filename or self._config_file
+        
+        config_dict = {
+            'color_scheme': self.config.color_scheme,
+            'theme': self.config.theme,
+            'dimensions': {
+                'default_height': self.config.default_height,
+                'default_width': self.config.default_width
+            },
+            'appearance': {
+                'pattern_opacity': self.config.pattern_opacity,
+                'show_grid': self.config.show_grid,
+                'annotation_font_size': self.config.annotation_font_size
+            },
+            'fonts': self.config.fonts,
+            'layout': self.config.layout,
+            'grid_settings': self.config.grid_settings,
+            'annotation_settings': self.config.annotation_settings,
+            'interactive_settings': self.config.interactive_settings,
+            'user_preferences': self._user_preferences
+        }
+        
+        with open(export_file, 'w') as f:
+            json.dump(config_dict, f, indent=4)
+    
+    def import_configuration(self, filename: Optional[str] = None) -> None:
+        """
+        Import configuration from file
+        
+        Args:
+            filename (Optional[str]): Import filename
+        """
+        import_file = filename or self._config_file
+        
+        try:
+            with open(import_file, 'r') as f:
+                config_dict = json.load(f)
+            
+            # Update configuration
+            self._update_config_from_dict(config_dict)
+            
+        except FileNotFoundError:
+            print(f"Configuration file {import_file} not found")
+        except json.JSONDecodeError:
+            print(f"Invalid configuration file format in {import_file}")
+    
+    def set_user_preference(self, key: str, value: Any) -> None:
+        """
+        Set user preference
+        
+        Args:
+            key (str): Preference key
+            value (Any): Preference value
+        """
+        self._user_preferences[key] = value
+        self._apply_user_preferences()
+    
+    def get_user_preference(self, key: str, default: Any = None) -> Any:
+        """
+        Get user preference
+        
+        Args:
+            key (str): Preference key
+            default (Any): Default value if not found
+            
+        Returns:
+            Any: Preference value
+        """
+        return self._user_preferences.get(key, default)
+    
+    def reset_to_defaults(self) -> None:
+        """Reset configuration to defaults"""
+        self.config = VisualizationConfig()
+        self._user_preferences = {}
+        self.base_settings = BaseVisualizationSettings(self.config)
+    
+    def _update_config_from_dict(self, config_dict: Dict[str, Any]) -> None:
+        """
+        Update configuration from dictionary
+        
+        Args:
+            config_dict (Dict[str, Any]): Configuration dictionary
+        """
+        # Update main configuration
+        if 'color_scheme' in config_dict:
+            self.config.color_scheme = config_dict['color_scheme']
+        if 'theme' in config_dict:
+            self.config.theme = config_dict['theme']
+            
+        # Update dimensions
+        if 'dimensions' in config_dict:
+            self.config.default_height = config_dict['dimensions']['default_height']
+            self.config.default_width = config_dict['dimensions']['default_width']
+            
+        # Update appearance
+        if 'appearance' in config_dict:
+            self.config.pattern_opacity = config_dict['appearance']['pattern_opacity']
+            self.config.show_grid = config_dict['appearance']['show_grid']
+            self.config.annotation_font_size = config_dict['appearance']['annotation_font_size']
+            
+        # Update advanced settings
+        if 'fonts' in config_dict:
+            self.config.fonts = config_dict['fonts']
+        if 'layout' in config_dict:
+            self.config.layout = config_dict['layout']
+        if 'grid_settings' in config_dict:
+            self.config.grid_settings = config_dict['grid_settings']
+        if 'annotation_settings' in config_dict:
+            self.config.annotation_settings = config_dict['annotation_settings']
+        if 'interactive_settings' in config_dict:
+            self.config.interactive_settings = config_dict['interactive_settings']
+            
+        # Update user preferences
+        if 'user_preferences' in config_dict:
+            self._user_preferences = config_dict['user_preferences']
+            self._apply_user_preferences()

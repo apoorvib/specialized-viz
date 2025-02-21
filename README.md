@@ -1,4 +1,4 @@
-# Specialized Data Visualization Library
+# Specialized Technical Analysis and Visualization Library
 
 [![PyPI](https://img.shields.io/pypi/v/specialized-viz?color=blue)](https://pypi.org/project/specialized-viz)
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/downloads/)

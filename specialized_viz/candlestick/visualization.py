@@ -9776,3 +9776,122 @@ class ConfigurationManager:
         if 'user_preferences' in config_dict:
             self._user_preferences = config_dict['user_preferences']
             self._apply_user_preferences()
+            
+    def _apply_user_preferences(self) -> None:
+        """Apply stored user preferences to configuration"""
+        for key, value in self._user_preferences.items():
+            if key.startswith('chart_'):
+                self._apply_chart_preference(key, value)
+            elif key.startswith('indicator_'):
+                self._apply_indicator_preference(key, value)
+            elif key.startswith('pattern_'):
+                self._apply_pattern_preference(key, value)
+
+    def _apply_chart_preference(self, key: str, value: Any) -> None:
+        """
+        Apply chart-specific preference
+        
+        Args:
+            key (str): Preference key
+            value (Any): Preference value
+        """
+        chart_prefs = {
+            'chart_style': lambda x: setattr(self.config, 'theme', x),
+            'chart_height': lambda x: setattr(self.config, 'default_height', x),
+            'chart_width': lambda x: setattr(self.config, 'default_width', x),
+            'chart_grid': lambda x: setattr(self.config, 'show_grid', x)
+        }
+        
+        if key in chart_prefs:
+            chart_prefs[key](value)
+
+    def _apply_indicator_preference(self, key: str, value: Any) -> None:
+        """
+        Apply indicator-specific preference
+        
+        Args:
+            key (str): Preference key
+            value (Any): Preference value
+        """
+        indicator_prefs = {
+            'indicator_colors': lambda x: self._update_indicator_colors(x),
+            'indicator_style': lambda x: self._update_indicator_style(x),
+            'indicator_placement': lambda x: self._update_indicator_placement(x)
+        }
+        
+        if key in indicator_prefs:
+            indicator_prefs[key](value)
+
+    def _apply_pattern_preference(self, key: str, value: Any) -> None:
+        """
+        Apply pattern-specific preference
+        
+        Args:
+            key (str): Preference key
+            value (Any): Preference value
+        """
+        pattern_prefs = {
+            'pattern_opacity': lambda x: setattr(self.config, 'pattern_opacity', x),
+            'pattern_colors': lambda x: self._update_pattern_colors(x),
+            'pattern_annotations': lambda x: self._update_pattern_annotations(x)
+        }
+        
+        if key in pattern_prefs:
+            pattern_prefs[key](value)
+
+    def create_config_backup(self) -> None:
+        """Create backup of current configuration"""
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        backup_file = f'config_backup_{timestamp}.json'
+        self.export_configuration(backup_file)
+    
+    def restore_config_backup(self, backup_file: str) -> None:
+        """
+        Restore configuration from backup
+        
+        Args:
+            backup_file (str): Backup file to restore from
+        """
+        self.import_configuration(backup_file)
+
+    def validate_configuration(self) -> List[str]:
+        """
+        Validate current configuration
+        
+        Returns:
+            List[str]: List of validation errors
+        """
+        errors = []
+        
+        # Validate color scheme
+        required_colors = ['bullish', 'bearish', 'neutral', 'background', 'text']
+        for color in required_colors:
+            if color not in self.config.color_scheme:
+                errors.append(f"Missing required color: {color}")
+        
+        # Validate dimensions
+        if self.config.default_height <= 0:
+            errors.append("Invalid default height")
+        if self.config.default_width <= 0:
+            errors.append("Invalid default width")
+        
+        # Validate opacity
+        if not 0 <= self.config.pattern_opacity <= 1:
+            errors.append("Pattern opacity must be between 0 and 1")
+        
+        return errors
+
+    def get_config_summary(self) -> Dict[str, Any]:
+        """
+        Get summary of current configuration
+        
+        Returns:
+            Dict[str, Any]: Configuration summary
+        """
+        return {
+            'theme': self.config.theme,
+            'dimensions': f"{self.config.default_width}x{self.config.default_height}",
+            'grid_enabled': self.config.show_grid,
+            'active_preferences': list(self._user_preferences.keys()),
+            'last_modified': datetime.now().isoformat()
+        }

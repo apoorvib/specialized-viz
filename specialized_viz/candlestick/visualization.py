@@ -9895,3 +9895,124 @@ class ConfigurationManager:
             'active_preferences': list(self._user_preferences.keys()),
             'last_modified': datetime.now().isoformat()
         }
+        
+    def create_persistent_store(self) -> None:
+        """Create persistent storage for configuration"""
+        if not os.path.exists('config'):
+            os.makedirs('config')
+            os.makedirs('config/backups')
+            os.makedirs('config/user_preferences')
+        
+        # Create default configuration if not exists
+        if not os.path.exists(self._config_file):
+            self.export_configuration()
+
+    def auto_save_config(self) -> None:
+        """Automatically save configuration periodically"""
+        self.export_configuration()
+        self.create_config_backup()
+
+    def load_last_session(self) -> bool:
+        """
+        Load configuration from last session
+        
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        session_file = 'config/last_session.json'
+        try:
+            self.import_configuration(session_file)
+            return True
+        except Exception as e:
+            print(f"Error loading last session: {str(e)}")
+            return False
+
+    def save_session(self, session_name: str) -> None:
+        """
+        Save current configuration as named session
+        
+        Args:
+            session_name (str): Name of the session
+        """
+        session_file = f'config/user_preferences/{session_name}.json'
+        self.export_configuration(session_file)
+        
+        # Update sessions list
+        self._update_sessions_list(session_name)
+
+    def _update_sessions_list(self, session_name: str) -> None:
+        """
+        Update list of saved sessions
+        
+        Args:
+            session_name (str): Name of session to add
+        """
+        sessions_file = 'config/sessions.json'
+        try:
+            with open(sessions_file, 'r') as f:
+                sessions = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            sessions = {'sessions': []}
+            
+        if session_name not in sessions['sessions']:
+            sessions['sessions'].append(session_name)
+            
+        with open(sessions_file, 'w') as f:
+            json.dump(sessions, f, indent=4)
+
+    def get_saved_sessions(self) -> List[str]:
+        """
+        Get list of saved sessions
+        
+        Returns:
+            List[str]: List of session names
+        """
+        sessions_file = 'config/sessions.json'
+        try:
+            with open(sessions_file, 'r') as f:
+                sessions = json.load(f)
+            return sessions['sessions']
+        except (FileNotFoundError, json.JSONDecodeError):
+            return []
+
+    def cleanup_old_backups(self, days: int = 30) -> None:
+        """
+        Remove old configuration backups
+        
+        Args:
+            days (int): Remove backups older than this many days
+        """
+        backup_dir = 'config/backups'
+        cutoff = datetime.now() - timedelta(days=days)
+        
+        for backup in os.listdir(backup_dir):
+            if backup.startswith('config_backup_'):
+                backup_path = os.path.join(backup_dir, backup)
+                backup_time = datetime.fromtimestamp(os.path.getctime(backup_path))
+                
+                if backup_time < cutoff:
+                    os.remove(backup_path)
+
+    def verify_config_integrity(self) -> bool:
+        """
+        Verify integrity of configuration files
+        
+        Returns:
+            bool: True if all files are valid
+        """
+        required_files = [
+            self._config_file,
+            'config/sessions.json'
+        ]
+        
+        for file in required_files:
+            if not os.path.exists(file):
+                return False
+            
+            try:
+                with open(file, 'r') as f:
+                    json.load(f)
+            except json.JSONDecodeError:
+                return False
+        
+        return True

@@ -4,7 +4,7 @@ from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Callable, Union
-from dataclasses import dataclass
+from dataclasses import dataclass, field, asdict
 from sklearn.cluster import DBSCAN
 import inspect
 from .patterns import CandlestickPatterns

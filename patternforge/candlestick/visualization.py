@@ -1,16 +1,39 @@
+# Common modules that might be needed
+import os
+import sys
+import threading
+import time
+import json
+import math
+import warnings
+from collections import defaultdict
+from datetime import datetime, timedelta
+
+# Data processing
+import numpy as np
+import pandas as pd
+from scipy import stats
+
+# Visualization
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
-import pandas as pd
-import numpy as np
-from typing import Dict, List, Tuple, Optional, Callable, Union
-from dataclasses import dataclass, field, asdict
-from sklearn.cluster import DBSCAN
-import inspect
-from .patterns import CandlestickPatterns
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.patches import Rectangle
+from matplotlib.figure import Figure
+
+# Type hints
+from typing import Dict, List, Tuple, Optional, Callable, Union, Any
+
+# Data structures
+from dataclasses import dataclass, field, asdict
+
+# Machine learning
+from sklearn.cluster import DBSCAN
+
+# Local imports
+from .patterns import CandlestickPatterns
 
 @dataclass
 class VisualizationConfig:

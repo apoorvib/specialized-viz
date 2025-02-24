@@ -329,7 +329,70 @@ class VisualizationCache:
         with self._lock:
             self._cache.clear()
             self._metadata.clear()
-            
+    
+# New class for theme management
+class VisualizationTheme:
+    """Theme manager for visualization customization"""
+    
+    def __init__(self, theme_name: str = "default"):
+        self.theme_name = theme_name
+        self.color_scheme = self._get_default_colors()
+        self.font_settings = self._get_default_fonts()
+        self.chart_settings = self._get_default_chart_settings()
+    
+    def _get_default_colors(self) -> Dict[str, str]:
+        return {
+            'background': '#ffffff',
+            'text': '#2c3e50',
+            'grid': '#ecf0f1',
+            'bullish': '#2ecc71',
+            'bearish': '#e74c3c',
+            'neutral': '#3498db',
+            'volume_up': '#2ecc71',
+            'volume_down': '#e74c3c'
+        }
+    
+    def _get_default_fonts(self) -> Dict[str, Any]:
+        return {
+            'family': 'Arial, sans-serif',
+            'size': {
+                'title': 16,
+                'axis': 12,
+                'label': 10,
+                'annotation': 10
+            }
+        }
+    
+    def _get_default_chart_settings(self) -> Dict[str, Any]:
+        return {
+            'padding': {'top': 10, 'right': 50, 'bottom': 20, 'left': 50},
+            'grid': True,
+            'grid_opacity': 0.1,
+            'show_legend': True,
+            'legend_position': 'top'
+        }
+
+@dataclass    
+class MarketRegime:
+    """
+    Represents a market regime with its characteristics
+    """
+    def __init__(self, 
+                 regime_type: str,
+                 volatility: str,
+                 trend: str,
+                 volume: str,
+                 start_date: pd.Timestamp,
+                 end_date: pd.Timestamp,
+                 confidence: float):
+        self.regime_type = regime_type  # e.g., 'trending', 'ranging', 'transitioning'
+        self.volatility = volatility    # e.g., 'high', 'medium', 'low'
+        self.trend = trend              # e.g., 'bullish', 'bearish', 'neutral'
+        self.volume = volume            # e.g., 'increasing', 'decreasing', 'stable'
+        self.start_date = start_date
+        self.end_date = end_date
+        self.confidence = confidence
+        
 class BaseVisualizationSettings:
     """
     Base settings and utilities for visualizations
@@ -5240,27 +5303,6 @@ class PatternQualityMetrics:
         
         return trend_alignment
     
-@dataclass    
-class MarketRegime:
-    """
-    Represents a market regime with its characteristics
-    """
-    def __init__(self, 
-                 regime_type: str,
-                 volatility: str,
-                 trend: str,
-                 volume: str,
-                 start_date: pd.Timestamp,
-                 end_date: pd.Timestamp,
-                 confidence: float):
-        self.regime_type = regime_type  # e.g., 'trending', 'ranging', 'transitioning'
-        self.volatility = volatility    # e.g., 'high', 'medium', 'low'
-        self.trend = trend              # e.g., 'bullish', 'bearish', 'neutral'
-        self.volume = volume            # e.g., 'increasing', 'decreasing', 'stable'
-        self.start_date = start_date
-        self.end_date = end_date
-        self.confidence = confidence
-
 class MarketRegimeAnalyzer:
     """
     Analyzes market regimes and their transitions
@@ -7304,48 +7346,6 @@ class VisualizationCache:
         oldest_key = min(self._access_times.items(), key=lambda x: x[1])[0]
         del self._cache[oldest_key]
         del self._access_times[oldest_key]
-
-# New class for theme management
-class VisualizationTheme:
-    """Theme manager for visualization customization"""
-    
-    def __init__(self, theme_name: str = "default"):
-        self.theme_name = theme_name
-        self.color_scheme = self._get_default_colors()
-        self.font_settings = self._get_default_fonts()
-        self.chart_settings = self._get_default_chart_settings()
-    
-    def _get_default_colors(self) -> Dict[str, str]:
-        return {
-            'background': '#ffffff',
-            'text': '#2c3e50',
-            'grid': '#ecf0f1',
-            'bullish': '#2ecc71',
-            'bearish': '#e74c3c',
-            'neutral': '#3498db',
-            'volume_up': '#2ecc71',
-            'volume_down': '#e74c3c'
-        }
-    
-    def _get_default_fonts(self) -> Dict[str, Any]:
-        return {
-            'family': 'Arial, sans-serif',
-            'size': {
-                'title': 16,
-                'axis': 12,
-                'label': 10,
-                'annotation': 10
-            }
-        }
-    
-    def _get_default_chart_settings(self) -> Dict[str, Any]:
-        return {
-            'padding': {'top': 10, 'right': 50, 'bottom': 20, 'left': 50},
-            'grid': True,
-            'grid_opacity': 0.1,
-            'show_legend': True,
-            'legend_position': 'top'
-        }
 
 class CalculationCache:
     """

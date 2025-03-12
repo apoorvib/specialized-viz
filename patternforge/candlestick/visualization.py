@@ -4290,14 +4290,24 @@ class CandlestickVisualizer:
         rsi = self._calculate_rsi(self.df['Close'])
         macd, signal = self._calculate_macd_with_signal(self.df['Close'])
         
-        # Add RSI
+        # Add RSI - this is the part that needs fixing
         fig.add_trace(
             go.Scatter(
                 x=self.df.index,
                 y=rsi,
                 name='RSI',
-                line=dict(color='purple', width=1)
+                line=dict(color='purple', width=1),
+                # Essential: specify the subplot explicitly
+                xaxis=f'x{row}',
+                yaxis=f'y{row}'
             ),
+            row=row, col=col
+        )
+
+        # Force RSI y-axis to have appropriate range
+        fig.update_yaxes(
+            title_text="RSI", 
+            range=[0, 100],  # Force RSI range to be 0-100
             row=row, col=col
         )
         

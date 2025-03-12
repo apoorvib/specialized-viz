@@ -39,20 +39,36 @@ A comprehensive Python library for financial technical analysis and visualizatio
 - Basic Patterns
   - Doji, Hammer, Engulfing
   - Morning/Evening Star
-  - Marubozu
+  - Marubozu, Harami, Spinning Top
+  - Piercing Pattern, Dark Cloud Cover
 - Complex Patterns
   - Three Line Strike
   - Abandoned Baby
   - Rising/Falling Three Methods
+  - Three White Soldiers, Three Black Crows
+  - Three Inside Up/Down, Three Outside Up/Down
+  - Island Reversal, Mat Hold
 - Harmonic Patterns
   - Gartley
   - Butterfly
   - Bat
-- Multi-timeframe Patterns
-  - Pattern consistency across timeframes
-  - Timeframe correlation analysis
-  - Hierarchical pattern detection
-  - Cross-timeframe confirmation
+- Advanced Patterns
+  - Eight New Price Lines
+  - Tweezer Tops/Bottoms
+  - Kicking Pattern
+  - Unique Three River Bottom
+  - Concealing Baby Swallow
+  - Three Stars in the South
+  - Tri-Star
+  - Ladder Bottom
+  - Matching Low
+  - Stick Sandwich
+  - Downside Gap Three Methods
+  - Two Rabbits
+  - Gapping Side-by-Side White Lines
+  - Volatility Adjusted Patterns
+
+
 
 #### Multi-timeframe Analysis
 

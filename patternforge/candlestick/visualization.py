@@ -77,7 +77,7 @@ class VisualizationConfig:
         },
         'legend': {
             'position': 'top',
-            'orientation': 'horizontal'
+            'orientation': 'h'
         }
     })
     

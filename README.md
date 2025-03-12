@@ -8,26 +8,31 @@ A comprehensive Python library for financial technical analysis and visualizatio
 
 ## Table of Contents
 
-- Features
-  - [Candlestick Pattern Detection](#1-candlestick-pattern-detection)
-  - [Market Regime Analysis](#2-market-regime-analysis)
-  - [Time Series Analysis & Forecasting](#3-time-series-analysis--forecasting)
-  - [Interactive Visualization](#4-interactive-visualization)
+- [Candlestick Pattern Detection](#1-candlestick-pattern-detection)
+- [Market Regime Analysis](#2-market-regime-analysis)
+- [Time Series Analysis & Forecasting](#3-time-series-analysis--forecasting)
+- [Interactive Visualization](#4-interactive-visualization)
+- [Network Analysis & Integration](#5-network-analysis--integration)
+
 - Installation
   - [Prerequisites](#prerequisites)
 - Quick Start
   - [Candlestick Analysis](#candlestick-analysis)
   - [Time Series Analysis](#time-series-analysis)
+  - [Technical Indicators](#technical-indicators)
 - Core Modules
   - [Candlestick Analysis](#1-candlestick-analysis)
   - [TimeseriesAnalysis](#2-timeseriesanalysis)
   - [TimeseriesVisualizer](#3-timeseriesvisualizer)
   - [TimeseriesForecasting](#4-timeseriesforecasting)
+  - [Network Analysis](#5-network-analysis)
+  - [Integration Manager](#6-integration-manager)
 - [Best Practices](#best-practices)
 - [Contributing](#contributing)
 - [License](#license)
 - [Support](#support)
 
+## 
 
 
 ## Features

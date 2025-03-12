@@ -320,7 +320,20 @@ regime_chart = visualizer.visualize_market_regimes(regimes)
 regime_chart.show()
 ```
 
+#### Multi-timeframe Analysis
 
+- Synchronize analysis across timeframes
+- Confirm patterns across different time horizons
+- Identify high-confidence setups
+
+```python
+# Create multi-timeframe chart
+weekly_data = data.resample('W').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'})
+monthly_data = data.resample('M').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'})
+
+mtf_chart = visualizer.create_multi_timeframe_chart(weekly_data, monthly_data)
+mtf_chart.show()
+```
 
 ### 2. TimeseriesAnalysis
 
@@ -343,7 +356,7 @@ regime_chart.show()
 - Model evaluation
 - Online learning
 
-###**5. Network Analysis**
+### 5. Network Analysis
 
 - Network Structure Analysis
   - Correlation networks

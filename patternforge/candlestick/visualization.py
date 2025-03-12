@@ -4943,19 +4943,23 @@ class CandlestickVisualizer:
         """
         delta = prices.diff()
         
-        gain = delta.where(delta > 0, 0)
-        loss = -delta.where(delta < 0, 0)
+        gain = delta.copy()
+        loss = delta.copy()
+        gain[gain < 0] = 0
+        loss[loss > 0] = 0
+        loss = abs(loss)
         
         avg_gain = gain.rolling(window=period).mean()
         avg_loss = loss.rolling(window=period).mean()
         
-        rs = pd.Series(0, index=prices.index)  # Initialize with zeros
-        valid_denominator = avg_loss != 0
-        rs[valid_denominator] = avg_gain[valid_denominator] / avg_loss[valid_denominator]
+        # Avoid division by zero
+        rs = avg_gain / avg_loss.replace(0, np.finfo(float).eps)
         
+        # Calculate RSI
         rsi = 100 - (100 / (1 + rs))
+        
         return rsi
-    
+        
     def _calculate_macd(self, prices: pd.Series) -> pd.Series:
         """Calculate MACD"""
         exp1 = prices.ewm(span=12, adjust=False).mean()

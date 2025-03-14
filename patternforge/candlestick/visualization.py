@@ -5385,9 +5385,9 @@ class MarketRegimeAnalyzer:
             self.volume_ma = self.df['Volume'].rolling(window=self.window_size).mean()
             
     def analyze_market_regime(self, 
-                            window_size: int = 20,
-                            volatility_window: int = 20,
-                            trend_window: int = 50) -> List[MarketRegime]:
+                        window_size: int = 20,
+                        volatility_window: int = 20,
+                        trend_window: int = 50) -> List[MarketRegime]:
         """
         Analyze and identify market regimes
         
@@ -5652,7 +5652,7 @@ class MarketRegimeAnalyzer:
 
     def _calculate_sr_regime(self, index: int, window: int = 20) -> str:
         """
-        Calculate support/resistance regime for a specific index
+        Calculate support/resistance regime for a specific index with proper error handling
         
         Args:
             index (int): Data index
@@ -5670,6 +5670,10 @@ class MarketRegimeAnalyzer:
             # Calculate support and resistance levels
             support_levels = self._identify_support_levels(price_window)
             resistance_levels = self._identify_resistance_levels(price_window)
+            
+            # Return default value if there are no levels identified
+            if not support_levels or not resistance_levels:
+                return "neutral"
             
             # Find closest levels
             closest_support = min((abs(level - current_price), level) 
@@ -5695,8 +5699,8 @@ class MarketRegimeAnalyzer:
                 
         except Exception as e:
             print(f"Error calculating S/R regime: {str(e)}")
-            return 'unknown'
-
+            return 'neutral'  # Return a default value on error
+    
     def _is_significant_change(self, 
                             prev_regime: Dict[str, str], 
                             current_regime: Dict[str, str]) -> bool:
@@ -5940,8 +5944,7 @@ class MarketRegimeAnalyzer:
         
         return pattern_instances
 
-    def calculate_regime_transitions(self, 
-                               lookback_period: int = 252) -> pd.DataFrame:
+    def calculate_regime_transitions(self, lookback_period: int = 252) -> pd.DataFrame:
         """
         Calculate probability of transitions between different market regimes
         
@@ -5952,11 +5955,8 @@ class MarketRegimeAnalyzer:
             pd.DataFrame: Transition probability matrix
         """
         # Get historical regimes
-        lookback_start = self.df.index[-1] - pd.Timedelta(days=lookback_period)
-        historical_regimes = self.analyze_market_regime(
-            start_date=lookback_start,
-            end_date=self.df.index[-1]
-        )
+        # No start_date/end_date parameters
+        historical_regimes = self.analyze_market_regime()
         
         if len(historical_regimes) < 2:
             return pd.DataFrame()
@@ -5976,14 +5976,13 @@ class MarketRegimeAnalyzer:
         # Calculate probabilities
         unique_regimes = set(r.regime_type for r in historical_regimes)
         prob_matrix = pd.DataFrame(0.0, 
-                                index=unique_regimes, 
-                                columns=unique_regimes)
+                                index=list(unique_regimes), 
+                                columns=list(unique_regimes))
         
         for current_regime in unique_regimes:
             if total_transitions[current_regime] > 0:
                 for next_regime in unique_regimes:
-                    prob = (transitions[current_regime][next_regime] / 
-                        total_transitions[current_regime])
+                    prob = transitions[current_regime].get(next_regime, 0) / total_transitions[current_regime]
                     prob_matrix.loc[current_regime, next_regime] = prob
         
         return prob_matrix
@@ -7471,7 +7470,7 @@ class MarketRegimeAnalyzer:
 
     def _identify_support_levels(self, prices: pd.Series, window: int = 20, threshold: float = 0.01) -> List[float]:
         """
-        Identify key support levels from price data
+        Identify key support levels from price data with proper error handling
         
         Args:
             prices (pd.Series): Price data
@@ -7479,17 +7478,27 @@ class MarketRegimeAnalyzer:
             threshold (float): Price proximity threshold
             
         Returns:
-            List[float]: List of support levels
+            List[float]: List of support levels (never empty)
         """
-        if len(prices) < window:
-            return []
-            
+        # Make sure we have enough data
+        if len(prices) < window * 2:
+            # If insufficient data, return current price as a default level
+            if len(prices) > 0:
+                return [prices.iloc[-1] * 0.98]  # Slightly below current price
+            # Return a sensible default if even prices is empty
+            return [100.0]
+        
         # Find local minima
         lows = []
         for i in range(window, len(prices) - window):
-            if all(prices.iloc[i] <= prices.iloc[i-j] for j in range(1, window+1)) and \
-            all(prices.iloc[i] <= prices.iloc[i+j] for j in range(1, window+1)):
+            window_around = prices.iloc[i-window:i+window+1]
+            if prices.iloc[i] <= window_around.min() * 1.01:  # Allow slight tolerance
                 lows.append(prices.iloc[i])
+        
+        # If no clear levels found, use quantiles
+        if not lows:
+            quantiles = prices.quantile([0.1, 0.25, 0.5]).tolist()
+            return quantiles
         
         # Cluster similar levels
         support_levels = []
@@ -7498,11 +7507,15 @@ class MarketRegimeAnalyzer:
             if not any(abs(low - level) / level < threshold for level in support_levels):
                 support_levels.append(low)
         
+        # Ensure we always return at least one level
+        if not support_levels:
+            support_levels = [prices.min()]
+        
         return support_levels
 
     def _identify_resistance_levels(self, prices: pd.Series, window: int = 20, threshold: float = 0.01) -> List[float]:
         """
-        Identify key resistance levels from price data
+        Identify key resistance levels from price data with proper error handling
         
         Args:
             prices (pd.Series): Price data
@@ -7510,17 +7523,27 @@ class MarketRegimeAnalyzer:
             threshold (float): Price proximity threshold
             
         Returns:
-            List[float]: List of resistance levels
+            List[float]: List of resistance levels (never empty)
         """
-        if len(prices) < window:
-            return []
-            
+        # Make sure we have enough data
+        if len(prices) < window * 2:
+            # If insufficient data, return current price as a default level
+            if len(prices) > 0:
+                return [prices.iloc[-1] * 1.02]  # Slightly above current price
+            # Return a sensible default if even prices is empty
+            return [100.0]
+        
         # Find local maxima
         highs = []
         for i in range(window, len(prices) - window):
-            if all(prices.iloc[i] >= prices.iloc[i-j] for j in range(1, window+1)) and \
-            all(prices.iloc[i] >= prices.iloc[i+j] for j in range(1, window+1)):
+            window_around = prices.iloc[i-window:i+window+1]
+            if prices.iloc[i] >= window_around.max() * 0.99:  # Allow slight tolerance
                 highs.append(prices.iloc[i])
+        
+        # If no clear levels found, use quantiles
+        if not highs:
+            quantiles = prices.quantile([0.5, 0.75, 0.9]).tolist()
+            return quantiles
         
         # Cluster similar levels
         resistance_levels = []
@@ -7528,6 +7551,10 @@ class MarketRegimeAnalyzer:
             # Check if this level is close to an existing one
             if not any(abs(high - level) / level < threshold for level in resistance_levels):
                 resistance_levels.append(high)
+        
+        # Ensure we always return at least one level
+        if not resistance_levels:
+            resistance_levels = [prices.max()]
         
         return resistance_levels
 

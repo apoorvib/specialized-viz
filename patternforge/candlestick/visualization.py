@@ -7329,6 +7329,459 @@ class MarketRegimeAnalyzer:
         combined_score = sum(consistency_scores[k] * weights[k] for k in weights)
         
         return combined_score
+    
+    def _calculate_rsi(self, prices: pd.Series, period: int = 14) -> pd.Series:
+        """
+        Calculate Relative Strength Index safely
+        
+        Args:
+            prices (pd.Series): Price data
+            period (int): RSI period
+            
+        Returns:
+            pd.Series: RSI values
+        """
+        delta = prices.diff()
+        
+        gain = delta.copy()
+        loss = delta.copy()
+        gain[gain < 0] = 0
+        loss[loss > 0] = 0
+        loss = abs(loss)
+        
+        avg_gain = gain.rolling(window=period).mean()
+        avg_loss = loss.rolling(window=period).mean()
+        
+        # Avoid division by zero
+        rs = avg_gain / avg_loss.replace(0, np.finfo(float).eps)
+        
+        # Calculate RSI
+        rsi = 100 - (100 / (1 + rs))
+        
+        return rsi
+
+    def _calculate_macd_with_signal(self, prices: pd.Series, 
+                                    fast_period: int = 12, 
+                                    slow_period: int = 26, 
+                                    signal_period: int = 9) -> Tuple[pd.Series, pd.Series]:
+        """
+        Calculate MACD and signal line
+        
+        Args:
+            prices (pd.Series): Price data
+            fast_period (int): Fast EMA period
+            slow_period (int): Slow EMA period
+            signal_period (int): Signal line period
+            
+        Returns:
+            Tuple[pd.Series, pd.Series]: MACD and signal line
+        """
+        fast_ema = prices.ewm(span=fast_period, adjust=False).mean()
+        slow_ema = prices.ewm(span=slow_period, adjust=False).mean()
+        macd = fast_ema - slow_ema
+        signal = macd.ewm(span=signal_period, adjust=False).mean()
+        return macd, signal
+
+    def _calculate_bollinger_bandwidth(self, prices: pd.Series, period: int = 20, std_dev: float = 2.0) -> pd.Series:
+        """
+        Calculate Bollinger Band bandwidth
+        
+        Args:
+            prices (pd.Series): Price data
+            period (int): Bollinger Band period
+            std_dev (float): Number of standard deviations
+            
+        Returns:
+            pd.Series: Bollinger Band bandwidth
+        """
+        middle_band = prices.rolling(window=period).mean()
+        std = prices.rolling(window=period).std()
+        
+        upper_band = middle_band + (std * std_dev)
+        lower_band = middle_band - (std * std_dev)
+        
+        # Calculate bandwidth
+        bandwidth = (upper_band - lower_band) / middle_band
+        
+        return bandwidth
+
+    def _find_swing_highs(self, data: pd.DataFrame, window: int = 5, threshold: float = 0.01) -> pd.Series:
+        """
+        Find swing high points in price data
+        
+        Args:
+            data (pd.DataFrame): Price data with 'High' column
+            window (int): Window size for comparison
+            threshold (float): Minimum price movement threshold
+            
+        Returns:
+            pd.Series: Series of swing high prices (non-NaN at swing points)
+        """
+        swing_highs = pd.Series(index=data.index, dtype=float)
+        
+        # We need at least 2*window+1 data points
+        if len(data) < 2 * window + 1:
+            return swing_highs
+            
+        for i in range(window, len(data) - window):
+            current_high = data['High'].iloc[i]
+            left_window = data['High'].iloc[i-window:i]
+            right_window = data['High'].iloc[i+1:i+window+1]
+            
+            # Check if current point is higher than all points in both windows
+            if (current_high > left_window.max() and 
+                current_high > right_window.max() and
+                (current_high - min(left_window.min(), right_window.min())) / current_high > threshold):
+                
+                swing_highs.iloc[i] = current_high
+                
+        return swing_highs
+
+    def _find_swing_lows(self, data: pd.DataFrame, window: int = 5, threshold: float = 0.01) -> pd.Series:
+        """
+        Find swing low points in price data
+        
+        Args:
+            data (pd.DataFrame): Price data with 'Low' column
+            window (int): Window size for comparison
+            threshold (float): Minimum price movement threshold
+            
+        Returns:
+            pd.Series: Series of swing low prices (non-NaN at swing points)
+        """
+        swing_lows = pd.Series(index=data.index, dtype=float)
+        
+        # We need at least 2*window+1 data points
+        if len(data) < 2 * window + 1:
+            return swing_lows
+            
+        for i in range(window, len(data) - window):
+            current_low = data['Low'].iloc[i]
+            left_window = data['Low'].iloc[i-window:i]
+            right_window = data['Low'].iloc[i+1:i+window+1]
+            
+            # Check if current point is lower than all points in both windows
+            if (current_low < left_window.min() and 
+                current_low < right_window.min() and
+                (max(left_window.max(), right_window.max()) - current_low) / current_low > threshold):
+                
+                swing_lows.iloc[i] = current_low
+                
+        return swing_lows
+
+    def _identify_support_levels(self, prices: pd.Series, window: int = 20, threshold: float = 0.01) -> List[float]:
+        """
+        Identify key support levels from price data
+        
+        Args:
+            prices (pd.Series): Price data
+            window (int): Lookback window
+            threshold (float): Price proximity threshold
+            
+        Returns:
+            List[float]: List of support levels
+        """
+        if len(prices) < window:
+            return []
+            
+        # Find local minima
+        lows = []
+        for i in range(window, len(prices) - window):
+            if all(prices.iloc[i] <= prices.iloc[i-j] for j in range(1, window+1)) and \
+            all(prices.iloc[i] <= prices.iloc[i+j] for j in range(1, window+1)):
+                lows.append(prices.iloc[i])
+        
+        # Cluster similar levels
+        support_levels = []
+        for low in sorted(lows):
+            # Check if this level is close to an existing one
+            if not any(abs(low - level) / level < threshold for level in support_levels):
+                support_levels.append(low)
+        
+        return support_levels
+
+    def _identify_resistance_levels(self, prices: pd.Series, window: int = 20, threshold: float = 0.01) -> List[float]:
+        """
+        Identify key resistance levels from price data
+        
+        Args:
+            prices (pd.Series): Price data
+            window (int): Lookback window
+            threshold (float): Price proximity threshold
+            
+        Returns:
+            List[float]: List of resistance levels
+        """
+        if len(prices) < window:
+            return []
+            
+        # Find local maxima
+        highs = []
+        for i in range(window, len(prices) - window):
+            if all(prices.iloc[i] >= prices.iloc[i-j] for j in range(1, window+1)) and \
+            all(prices.iloc[i] >= prices.iloc[i+j] for j in range(1, window+1)):
+                highs.append(prices.iloc[i])
+        
+        # Cluster similar levels
+        resistance_levels = []
+        for high in sorted(highs):
+            # Check if this level is close to an existing one
+            if not any(abs(high - level) / level < threshold for level in resistance_levels):
+                resistance_levels.append(high)
+        
+        return resistance_levels
+
+    def _is_regime_change(self, prev_regime: Dict[str, str], current_regime: Dict[str, str]) -> bool:
+        """
+        Determine if a regime change has occurred based on component changes
+        
+        Args:
+            prev_regime (Dict[str, str]): Previous regime characteristics
+            current_regime (Dict[str, str]): Current regime characteristics
+            
+        Returns:
+            bool: True if regime has changed significantly
+        """
+        # Define weights for different components
+        weights = {
+            'trend': 0.45,       # Trend is most important
+            'volatility': 0.30,  # Volatility is second
+            'volume': 0.15,      # Volume less important
+            'momentum': 0.05,    # Optional components
+            'support_resistance': 0.05
+        }
+        
+        # Calculate change score
+        change_score = 0
+        for component, weight in weights.items():
+            if component in prev_regime and component in current_regime:
+                if prev_regime[component] != current_regime[component]:
+                    change_score += weight
+        
+        # Threshold for significant change
+        return change_score >= 0.4
+
+    def _determine_regime_type(self, regime_data: Dict[str, str]) -> str:
+        """
+        Determine overall regime type from component characteristics
+        
+        Args:
+            regime_data (Dict[str, str]): Regime characteristics
+            
+        Returns:
+            str: Overall regime type
+        """
+        trend = regime_data.get('trend', 'unknown')
+        volatility = regime_data.get('volatility', 'unknown')
+        
+        if trend == 'unknown' or volatility == 'unknown':
+            return 'unknown'
+        
+        # Determine regime type based on trend and volatility
+        if trend in ['bullish', 'strong_bullish', 'weak_bullish']:
+            if volatility == 'low':
+                return 'trending'  # Stable uptrend
+            elif volatility == 'high':
+                return 'volatile'  # Volatile uptrend
+            else:
+                return 'trending'  # Normal uptrend
+        elif trend in ['bearish', 'strong_bearish', 'weak_bearish']:
+            if volatility == 'low':
+                return 'trending'  # Stable downtrend
+            elif volatility == 'high':
+                return 'volatile'  # Volatile downtrend
+            else:
+                return 'trending'  # Normal downtrend
+        else:  # neutral trend
+            if volatility == 'low':
+                return 'consolidating'  # Low volatility sideways
+            elif volatility == 'high':
+                return 'transitioning'  # High volatility sideways - likely transition
+            else:
+                return 'ranging'  # Normal volatility sideways
+
+    def _calculate_regime_confidence(self, regime_data: Dict[str, str]) -> float:
+        """
+        Calculate confidence score for detected regime
+        
+        Args:
+            regime_data (Dict[str, str]): Regime characteristics
+            
+        Returns:
+            float: Confidence score between 0 and 1
+        """
+        # Base confidence
+        confidence = 0.7
+        
+        # Conflicting signals reduce confidence
+        trend = regime_data.get('trend', 'unknown')
+        momentum = regime_data.get('momentum', 'unknown')
+        
+        if trend != 'unknown' and momentum != 'unknown':
+            # Trend and momentum contradiction
+            if (trend in ['bullish', 'strong_bullish'] and momentum in ['bearish', 'strong_bearish']) or \
+            (trend in ['bearish', 'strong_bearish'] and momentum in ['bullish', 'strong_bullish']):
+                confidence -= 0.2
+        
+        # Unknown components reduce confidence
+        unknown_components = sum(1 for value in regime_data.values() if value == 'unknown')
+        confidence -= 0.05 * unknown_components
+        
+        return max(0.3, min(0.95, confidence))
+
+    def _analyze_sr_tests(self, data: pd.DataFrame) -> float:
+        """
+        Analyze support/resistance tests
+        
+        Args:
+            data (pd.DataFrame): Price data
+            
+        Returns:
+            float: Test intensity score (0-1)
+        """
+        # This is a simplified implementation
+        if len(data) < 10:
+            return 0.5
+        
+        # Calculate key levels
+        support_levels = self._identify_support_levels(data['Low'])
+        resistance_levels = self._identify_resistance_levels(data['High'])
+        
+        # Count tests of key levels
+        test_count = 0
+        for i in range(1, len(data)):
+            close = data['Close'].iloc[i]
+            prev_close = data['Close'].iloc[i-1]
+            
+            # Check if price is testing a level
+            for level in support_levels + resistance_levels:
+                test_distance = abs(close - level) / level
+                if test_distance < 0.01:  # Within 1% of level
+                    test_count += 1
+                    break
+        
+        # Normalize test count
+        max_possible_tests = len(data)
+        test_intensity = min(1.0, test_count / max_possible_tests * 3)  # Scale up for meaningful scores
+        
+        return test_intensity
+
+    def _get_historical_transition_durations(self, from_regime: str, to_regime: str) -> List[int]:
+        """
+        Get historical transition durations between regime types
+        
+        Args:
+            from_regime (str): Starting regime type
+            to_regime (str): Target regime type
+            
+        Returns:
+            List[int]: List of historical durations in bars
+        """
+        # Simplified implementation - uses default values as we don't have historical data
+        typical_durations = {
+            ('trending', 'volatile'): [5, 7, 10],
+            ('trending', 'ranging'): [8, 12, 15],
+            ('trending', 'consolidating'): [10, 15, 20],
+            ('volatile', 'trending'): [3, 5, 8],
+            ('volatile', 'ranging'): [5, 8, 10],
+            ('ranging', 'trending'): [8, 12, 18],
+            ('ranging', 'volatile'): [3, 5, 8],
+            ('consolidating', 'trending'): [7, 10, 15],
+            ('consolidating', 'volatile'): [3, 5, 10],
+        }
+        
+        key = (from_regime, to_regime)
+        if key in typical_durations:
+            return typical_durations[key]
+        
+        # Default durations if specific transition not found
+        return [10, 15, 20]
+
+    def _calculate_driver_importance(self, driver_name: str, current_regime: str, target_regime: str) -> float:
+        """
+        Calculate the importance of a driver for specific regime transition
+        
+        Args:
+            driver_name (str): Name of the driver
+            current_regime (str): Current regime type
+            target_regime (str): Target regime type
+            
+        Returns:
+            float: Importance score between 0 and 1
+        """
+        # Define driver importance for different transitions
+        driver_importance = {
+            'volatile': {
+                'volatility_pressure': 0.8,
+                'volume_anomalies': 0.6,
+                'momentum_divergence': 0.5,
+                'trend_exhaustion': 0.3,
+                'support_resistance_tests': 0.4
+            },
+            'trending': {
+                'trend_exhaustion': 0.7,
+                'momentum_divergence': 0.6,
+                'volatility_pressure': 0.4,
+                'volume_anomalies': 0.5,
+                'support_resistance_tests': 0.3
+            },
+            'ranging': {
+                'support_resistance_tests': 0.7,
+                'volatility_pressure': 0.5,
+                'volume_anomalies': 0.4,
+                'momentum_divergence': 0.3,
+                'trend_exhaustion': 0.2
+            },
+            'consolidating': {
+                'volatility_pressure': 0.6,
+                'volume_anomalies': 0.7,
+                'support_resistance_tests': 0.5,
+                'trend_exhaustion': 0.3,
+                'momentum_divergence': 0.2
+            },
+            'transitioning': {
+                'momentum_divergence': 0.7,
+                'volatility_pressure': 0.6,
+                'trend_exhaustion': 0.5,
+                'volume_anomalies': 0.4,
+                'support_resistance_tests': 0.3
+            }
+        }
+        
+        # Get importance for target regime
+        if target_regime in driver_importance and driver_name in driver_importance[target_regime]:
+            return driver_importance[target_regime][driver_name]
+        
+        # Default importance
+        return 0.5
+
+    def _get_pattern_signals(self, pattern_name: str, slice_data: pd.DataFrame = None) -> Union[pd.Series, Tuple[pd.Series, pd.Series]]:
+        """
+        Get pattern signals for a specific slice of data
+        
+        Args:
+            pattern_name (str): Name of the pattern
+            slice_data (pd.DataFrame): Data slice to analyze
+            
+        Returns:
+            Union[pd.Series, Tuple[pd.Series, pd.Series]]: Pattern signals
+        """
+        # Use provided slice or full data
+        data = slice_data if slice_data is not None else self.df
+        
+        # Create a pattern analyzer
+        from .patterns import CandlestickPatterns
+        patterns = CandlestickPatterns()
+        
+        # Get pattern detection method
+        pattern_method = getattr(patterns, f'detect_{pattern_name}', None)
+        
+        if pattern_method is not None:
+            return pattern_method(data)
+        
+        # Return empty signals if pattern not found
+        empty_signal = pd.Series(False, index=data.index)
+        return empty_signal
         
 class VisualizationCache:
     """Cache manager for visualization calculations"""

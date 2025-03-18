@@ -5528,6 +5528,41 @@ class MarketRegimeAnalyzer:
         
         return trend
     
+    def _determine_regime_type(self, regime_data: Dict[str, str]) -> str:
+        """
+        Determine overall regime type from component characteristics
+        Using a simplified 5-regime system.
+        
+        Args:
+            regime_data (Dict[str, str]): Regime characteristics
+            
+        Returns:
+            str: Overall regime type
+        """
+        trend = regime_data.get('trend', 'unknown')
+        volatility = regime_data.get('volatility', 'unknown')
+        volume = regime_data.get('volume', 'unknown')
+        
+        if trend == 'unknown' or volatility == 'unknown':
+            return 'unknown'
+        
+        # High volatility overrides other considerations to become 'volatile' regime
+        if volatility == 'high':
+            return 'volatile'
+        
+        # Determine primary regimes based on trend
+        if trend in ['bullish', 'strong_bullish', 'weak_bullish']:
+            return 'bullish'
+        elif trend in ['bearish', 'strong_bearish', 'weak_bearish']:
+            return 'bearish'
+        
+        # For neutral trends, determine if consolidating or transitioning
+        if volatility == 'low':
+            return 'consolidating'
+        else:
+            return 'transitioning'
+
+    
     def _calculate_volume_regime(self, window: int) -> pd.Series:
         """
         Calculate volume regime

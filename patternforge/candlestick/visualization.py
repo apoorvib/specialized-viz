@@ -5714,7 +5714,7 @@ class MarketRegimeAnalyzer:
             closest_support = min((abs(level - current_price), level) 
                                 for level in support_levels)[1]
             closest_resistance = min((abs(level - current_price), level) 
-                                for level in resistance_levels)[1]
+                                    for level in resistance_levels)[1]
             
             # Calculate distances as percentages
             support_distance = (current_price - closest_support) / current_price

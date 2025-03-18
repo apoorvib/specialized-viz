@@ -5979,45 +5979,38 @@ class MarketRegimeAnalyzer:
         
         return pattern_instances
 
-    def calculate_regime_transitions(self, lookback_period: int = 252) -> pd.DataFrame:
-        """
-        Calculate probability of transitions between different market regimes
-        
-        Args:
-            lookback_period (int): Historical period to analyze in days
-            
-        Returns:
-            pd.DataFrame: Transition probability matrix
-        """
-        # Get historical regimes
-        # No start_date/end_date parameters
-        historical_regimes = self.analyze_market_regime()
-        
-        if len(historical_regimes) < 2:
-            return pd.DataFrame()
-        
+    def calculate_regime_transitions(regimes):
+        """Calculate probability of transitions between different market regimes"""
         # Create transition matrix
-        transitions = defaultdict(lambda: defaultdict(int))
-        total_transitions = defaultdict(int)
+        transitions = {}
+        total_transitions = {}
         
         # Count regime transitions
-        for i in range(len(historical_regimes) - 1):
-            current_regime = historical_regimes[i].regime_type
-            next_regime = historical_regimes[i + 1].regime_type
+        for i in range(len(regimes) - 1):
+            current_regime = regimes[i].regime_type
+            next_regime = regimes[i + 1].regime_type
             
+            if current_regime not in transitions:
+                transitions[current_regime] = {}
+                total_transitions[current_regime] = 0
+                
+            if next_regime not in transitions[current_regime]:
+                transitions[current_regime][next_regime] = 0
+                
             transitions[current_regime][next_regime] += 1
             total_transitions[current_regime] += 1
         
         # Calculate probabilities
-        unique_regimes = set(r.regime_type for r in historical_regimes)
+        unique_regimes = set(r.regime_type for r in regimes)
         prob_matrix = pd.DataFrame(0.0, 
                                 index=list(unique_regimes), 
                                 columns=list(unique_regimes))
         
         for current_regime in unique_regimes:
-            if total_transitions[current_regime] > 0:
-                for next_regime in unique_regimes:
-                    prob = transitions[current_regime].get(next_regime, 0) / total_transitions[current_regime]
+            if current_regime in total_transitions and total_transitions[current_regime] > 0:
+                for next_regime in transitions.get(current_regime, {}):
+                    prob = (transitions[current_regime][next_regime] / 
+                        total_transitions[current_regime])
                     prob_matrix.loc[current_regime, next_regime] = prob
         
         return prob_matrix

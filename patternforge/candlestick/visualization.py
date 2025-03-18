@@ -7619,6 +7619,7 @@ class MarketRegimeAnalyzer:
     def _determine_regime_type(self, regime_data: Dict[str, str]) -> str:
         """
         Determine overall regime type from component characteristics
+        Using a simplified 5-regime system.
         
         Args:
             regime_data (Dict[str, str]): Regime characteristics
@@ -7632,29 +7633,23 @@ class MarketRegimeAnalyzer:
         if trend == 'unknown' or volatility == 'unknown':
             return 'unknown'
         
-        # Determine regime type based on trend and volatility
+        # High volatility overrides other considerations to become 'volatile' regime
+        if volatility == 'high':
+            return 'volatile'
+        
+        # Determine primary regimes based on trend
         if trend in ['bullish', 'strong_bullish', 'weak_bullish']:
-            if volatility == 'low':
-                return 'trending'  # Stable uptrend
-            elif volatility == 'high':
-                return 'volatile'  # Volatile uptrend
-            else:
-                return 'trending'  # Normal uptrend
+            return 'bullish'
         elif trend in ['bearish', 'strong_bearish', 'weak_bearish']:
-            if volatility == 'low':
-                return 'trending'  # Stable downtrend
-            elif volatility == 'high':
-                return 'volatile'  # Volatile downtrend
-            else:
-                return 'trending'  # Normal downtrend
-        else:  # neutral trend
-            if volatility == 'low':
-                return 'consolidating'  # Low volatility sideways
-            elif volatility == 'high':
-                return 'transitioning'  # High volatility sideways - likely transition
-            else:
-                return 'ranging'  # Normal volatility sideways
-
+            return 'bearish'
+        
+        # For neutral trends, determine if consolidating or transitioning
+        if volatility == 'low':
+            return 'consolidating'
+        else:
+            return 'transitioning'
+    
+    
     def _calculate_regime_confidence(self, regime_data: Dict[str, str]) -> float:
         """
         Calculate confidence score for detected regime

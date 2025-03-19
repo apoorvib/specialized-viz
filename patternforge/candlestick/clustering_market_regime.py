@@ -668,7 +668,8 @@ class ClusteringMarketRegimeAnalyzer:
         # Normalize to sum to 1 (like probabilities)
         probabilities = similarities / similarities.sum(axis=1, keepdims=True)
         return probabilities
-    
+
+
     def _calculate_dbscan_probabilities(self, X: np.ndarray) -> None:
         """
         Calculate probability-like scores for DBSCAN clusters
@@ -695,18 +696,6 @@ class ClusteringMarketRegimeAnalyzer:
         for i in range(X.shape[0]):
             point = X[i]
             distances = np.array([np.linalg.norm(point - center) for center in cluster_centers])
-            # Calculate similarity scores
-            similarities = 1 / (1 + distances)
-            # Normalize
-            probs[i] = similarities / similarities.sum()
-        
-        # Convert to DataFrame
-        self.cluster_probs = pd.DataFrame(
-            probs,
-            index=self.features_processed.index,
-            columns=[f'Cluster_{i}' for i in unique_clusters]
-        )i]
-            distances = np.array([np.linalg.norm(point - center) for center in cluster_centers])
             if self.cluster_labels.iloc[i] == -1:  # Noise point
                 probs[i] = 0  # No strong association with any cluster
             else:
@@ -721,7 +710,7 @@ class ClusteringMarketRegimeAnalyzer:
             index=self.features_processed.index,
             columns=[f'Cluster_{int(i)}' for i in valid_clusters]
         )
-    
+
     def _calculate_hierarchical_probabilities(self, X: np.ndarray, Z: np.ndarray) -> None:
         """
         Calculate probability-like scores for hierarchical clusters
@@ -745,4 +734,652 @@ class ClusteringMarketRegimeAnalyzer:
         
         # Calculate distances and convert to probabilities
         for i in range(X.shape[0]):
-            point = X[
+            point = X[i]
+            distances = np.array([np.linalg.norm(point - center) for center in cluster_centers])
+            # Calculate similarity scores
+            similarities = 1 / (1 + distances)
+            # Normalize
+            probs[i] = similarities / similarities.sum()
+        
+        # Convert to DataFrame
+        self.cluster_probs = pd.DataFrame(
+            probs,
+            index=self.features_processed.index,
+            columns=[f'Cluster_{i}' for i in unique_clusters]
+        )
+
+    def _calculate_hdbscan_probabilities(self, X: np.ndarray) -> None:
+        """
+        Calculate probability scores for HDBSCAN clusters
+        
+        Args:
+            X (np.ndarray): Feature matrix
+        """
+        # Get unique valid clusters (excluding noise)
+        unique_clusters = np.unique(self.cluster_labels)
+        valid_clusters = unique_clusters[unique_clusters >= 0]
+        n_clusters = len(valid_clusters)
+        
+        # Initialize probability matrix
+        probs = np.zeros((X.shape[0], n_clusters))
+        
+        # Use HDBSCAN's probabilities if available
+        if hasattr(self.cluster_model, 'probabilities_'):
+            # For points assigned to a cluster, use the membership probability
+            for i, (cluster, prob) in enumerate(zip(self.cluster_labels, self.cluster_model.probabilities_)):
+                if cluster >= 0:  # Not noise
+                    cluster_idx = np.where(valid_clusters == cluster)[0][0]
+                    probs[i, cluster_idx] = prob
+        else:
+            # Fall back to distance-based approach
+            # Calculate cluster centers
+            cluster_centers = np.zeros((n_clusters, X.shape[1]))
+            for i, cluster_id in enumerate(valid_clusters):
+                mask = self.cluster_labels == cluster_id
+                cluster_centers[i] = X[mask].mean(axis=0)
+            
+            # Calculate distances and convert to probabilities
+            for i in range(X.shape[0]):
+                if self.cluster_labels.iloc[i] >= 0:  # Not noise
+                    point = X[i]
+                    distances = np.array([np.linalg.norm(point - center) for center in cluster_centers])
+                    # Calculate similarity scores
+                    similarities = 1 / (1 + distances)
+                    # Normalize
+                    probs[i] = similarities / similarities.sum()
+        
+        # Convert to DataFrame
+        self.cluster_probs = pd.DataFrame(
+            probs,
+            index=self.features_processed.index,
+            columns=[f'Cluster_{int(i)}' for i in valid_clusters]
+        )
+
+    def _calculate_som_probabilities(self, X: np.ndarray) -> None:
+        """
+        Calculate probability-like scores for SOM clusters
+        
+        Args:
+            X (np.ndarray): Feature matrix
+        """
+        # Get unique valid clusters
+        unique_clusters = np.unique(self.cluster_labels)
+        n_clusters = len(unique_clusters)
+        
+        # Initialize probability matrix
+        probs = np.zeros((X.shape[0], n_clusters))
+        
+        # Calculate cluster centers
+        cluster_centers = np.zeros((n_clusters, X.shape[1]))
+        for i, cluster_id in enumerate(unique_clusters):
+            mask = self.cluster_labels == cluster_id
+            cluster_centers[i] = X[mask].mean(axis=0)
+        
+        # Calculate quantization errors for each point to each cluster center
+        for i in range(X.shape[0]):
+            point = X[i]
+            # Use negative quantization error (distance) as activation
+            distances = np.array([np.linalg.norm(point - center) for center in cluster_centers])
+            # Convert to soft assignments (probabilities)
+            # Using softmax-like formula
+            exp_neg_dist = np.exp(-distances)
+            probs[i] = exp_neg_dist / exp_neg_dist.sum()
+        
+        # Convert to DataFrame
+        self.cluster_probs = pd.DataFrame(
+            probs,
+            index=self.features_processed.index,
+            columns=[f'Cluster_{i}' for i in unique_clusters]
+        )
+
+    def _get_common_transitions(self, regimes: List[ClusteringMarketRegime]) -> Dict[str, float]:
+        """
+        Get common regime transitions for a set of regimes
+        
+        Args:
+            regimes (List[ClusteringMarketRegime]): Regimes to analyze
+            
+        Returns:
+            Dict[str, float]: Common transitions and their probabilities
+        """
+        # Aggregate transition probabilities across all regimes
+        transition_counts = {}
+        
+        for regime in regimes:
+            if not regime.transition_probs:
+                continue
+                
+            for to_regime, prob in regime.transition_probs.items():
+                key = f"{regime.regime_type} -> {to_regime}"
+                if key not in transition_counts:
+                    transition_counts[key] = []
+                    
+                transition_counts[key].append(prob)
+        
+        # Calculate average probabilities
+        avg_transitions = {}
+        for transition, probs in transition_counts.items():
+            avg_transitions[transition] = np.mean(probs)
+        
+        # Return sorted by probability
+        return dict(sorted(
+            avg_transitions.items(),
+            key=lambda item: item[1],
+            reverse=True
+        ))                
+        
+    def find_similar_historical_regimes(self, 
+                                    current_features: np.ndarray,
+                                    n_matches: int = 3) -> List[ClusteringMarketRegime]:
+        """
+        Find historical regimes that are most similar to current market conditions
+        
+        Args:
+            current_features (np.ndarray): Current market feature vector
+            n_matches (int): Number of matches to return
+            
+        Returns:
+            List[ClusteringMarketRegime]: Most similar historical regimes
+        """
+        if not self.regimes:
+            return []
+            
+        # Scale current features using the same scaler
+        if self.scaler is not None:
+            current_features = self.scaler.transform(current_features.reshape(1, -1))[0]
+        
+        # Apply PCA if used
+        if self.pca is not None:
+            current_features = self.pca.transform(current_features.reshape(1, -1))[0]
+        
+        # Calculate distances to each regime's feature vector
+        regime_distances = []
+        
+        for regime in self.regimes:
+            if regime.feature_vector is None:
+                continue
+                
+            # Calculate Euclidean distance
+            distance = np.linalg.norm(current_features - regime.feature_vector)
+            regime_distances.append((regime, distance))
+        
+        # Sort by distance (most similar first)
+        regime_distances.sort(key=lambda x: x[1])
+        
+        # Return top N matches
+        return [regime for regime, _ in regime_distances[:n_matches]]
+
+    def predict_next_regime(self,
+                        current_regime: str,
+                        n_steps: int = 1) -> List[Tuple[str, float]]:
+        """
+        Predict the most likely next regime(s) using transition probabilities
+        
+        Args:
+            current_regime (str): Current regime type
+            n_steps (int): Number of steps to predict ahead
+            
+        Returns:
+            List[Tuple[str, float]]: Predicted regimes and their probabilities
+        """
+        if not self.regimes or not self.transition_matrix.shape[0] > 0:
+            return []
+            
+        # Get current regime row from transition matrix
+        if current_regime not in self.transition_matrix.index:
+            return []
+            
+        # For single step prediction
+        if n_steps == 1:
+            transitions = self.transition_matrix.loc[current_regime]
+            # Sort by probability
+            sorted_transitions = sorted(
+                [(regime, prob) for regime, prob in transitions.items() if prob > 0],
+                key=lambda x: x[1],
+                reverse=True
+            )
+            return sorted_transitions
+        
+        # For multi-step prediction using Markov chain
+        else:
+            # Calculate n-step transition matrix (matrix power)
+            transition_matrix_n = np.linalg.matrix_power(
+                self.transition_matrix.values,
+                n_steps
+            )
+            
+            # Get row for current regime
+            current_idx = list(self.transition_matrix.index).index(current_regime)
+            probs = transition_matrix_n[current_idx]
+            
+            # Create predictions
+            predictions = [
+                (regime, probs[i])
+                for i, regime in enumerate(self.transition_matrix.columns)
+                if probs[i] > 0
+            ]
+            
+            # Sort by probability
+            predictions.sort(key=lambda x: x[1], reverse=True)
+            return predictions
+
+    def plot_regime_transitions(self, 
+                            filename: Optional[str] = None,
+                            min_prob: float = 0.05) -> None:
+        """
+        Plot regime transition network graph
+        
+        Args:
+            filename (Optional[str]): Output filename, if None displays plot
+            min_prob (float): Minimum transition probability to include
+        """
+        try:
+            import networkx as nx
+            import matplotlib.pyplot as plt
+            
+            if not self.regimes or self.transition_matrix.empty:
+                self.logger.warning("No regimes or transitions to plot")
+                return
+                
+            # Create directed graph
+            G = nx.DiGraph()
+            
+            # Add nodes (regimes)
+            unique_regimes = set(r.regime_type for r in self.regimes)
+            for regime in unique_regimes:
+                G.add_node(regime)
+            
+            # Add edges (transitions)
+            for i, from_regime in enumerate(self.transition_matrix.index):
+                for j, to_regime in enumerate(self.transition_matrix.columns):
+                    prob = self.transition_matrix.iloc[i, j]
+                    if prob >= min_prob:
+                        G.add_edge(from_regime, to_regime, weight=prob, label=f"{prob:.2f}")
+            
+            # Set up plot
+            plt.figure(figsize=(12, 8))
+            
+            # Define node colors based on regime characteristics
+            node_colors = []
+            for regime in G.nodes():
+                if 'bullish' in regime:
+                    node_colors.append('green')
+                elif 'bearish' in regime:
+                    node_colors.append('red')
+                elif 'volatile' in regime:
+                    node_colors.append('orange')
+                else:
+                    node_colors.append('blue')
+            
+            # Layout
+            pos = nx.spring_layout(G, k=0.5, iterations=50)
+            
+            # Draw nodes
+            nx.draw_networkx_nodes(G, pos, node_size=700, node_color=node_colors, alpha=0.8)
+            
+            # Draw edges with varying thickness based on probability
+            edge_weights = [G[u][v]['weight'] * 5 for u, v in G.edges()]
+            nx.draw_networkx_edges(G, pos, width=edge_weights, alpha=0.7, 
+                                edge_color='gray', arrowsize=20)
+            
+            # Draw labels
+            nx.draw_networkx_labels(G, pos, font_size=10)
+            
+            # Draw edge labels (probabilities)
+            edge_labels = {(u, v): f"{G[u][v]['weight']:.2f}" for u, v in G.edges()}
+            nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, font_size=8)
+            
+            plt.title("Market Regime Transition Network")
+            plt.axis('off')
+            
+            # Save or display
+            if filename:
+                plt.savefig(filename, dpi=300, bbox_inches='tight')
+                self.logger.info(f"Saved transition network plot to {filename}")
+            else:
+                plt.show()
+                
+        except ImportError:
+            self.logger.warning("Could not plot transitions. NetworkX and matplotlib required.")
+
+    def plot_regime_performance(self, 
+                            metrics: List[str] = None,
+                            filename: Optional[str] = None) -> None:
+        """
+        Plot performance metrics across different regime types
+        
+        Args:
+            metrics (List[str]): List of metrics to plot
+            filename (Optional[str]): Output filename, if None displays plot
+        """
+        try:
+            import matplotlib.pyplot as plt
+            import seaborn as sns
+            
+            # Default metrics if none provided
+            if metrics is None:
+                metrics = ['daily_return_mean', 'daily_return_std', 'win_rate', 'total_return']
+                
+            # Get performance stats for all regimes
+            perf_df = self.analyze_regime_stats()
+            
+            if perf_df.empty:
+                self.logger.warning("No regime performance data to plot")
+                return
+                
+            # Filter to regime aggregates
+            agg_df = perf_df[perf_df['type'] == 'average'].drop(columns=['type']).set_index('regime')
+            
+            if agg_df.empty:
+                self.logger.warning("No aggregated regime data to plot")
+                return
+                
+            # Check if requested metrics exist
+            available_metrics = [m for m in metrics if m in agg_df.columns]
+            if not available_metrics:
+                self.logger.warning(f"None of the requested metrics {metrics} are available")
+                return
+                
+            # Set up plot
+            fig, axes = plt.subplots(len(available_metrics), 1, figsize=(10, 3*len(available_metrics)))
+            
+            # Handle single metric case
+            if len(available_metrics) == 1:
+                axes = [axes]
+                
+            # Plot each metric
+            for i, metric in enumerate(available_metrics):
+                ax = axes[i]
+                metric_data = agg_df[metric].sort_values(ascending=False)
+                
+                # Create bar colors based on regime type
+                colors = []
+                for regime in metric_data.index:
+                    if 'bullish' in regime:
+                        colors.append('green')
+                    elif 'bearish' in regime:
+                        colors.append('red')
+                    elif 'volatil' in regime:
+                        colors.append('orange')
+                    else:
+                        colors.append('blue')
+                        
+                # Plot bars
+                sns.barplot(x=metric_data.index, y=metric_data.values, palette=colors, ax=ax)
+                
+                # Format labels
+                ax.set_title(f"{metric.replace('_', ' ').title()}")
+                ax.set_xlabel('')
+                
+                # Rotate x-axis labels
+                plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
+                
+                # Add value labels on bars
+                for j, v in enumerate(metric_data.values):
+                    ax.text(j, v + 0.01 * abs(v), f"{v:.2f}", ha='center')
+            
+            plt.tight_layout()
+            
+            # Save or display
+            if filename:
+                plt.savefig(filename, dpi=300, bbox_inches='tight')
+                self.logger.info(f"Saved performance plot to {filename}")
+            else:
+                plt.show()
+                
+        except ImportError:
+            self.logger.warning("Could not plot performance. Matplotlib and seaborn required.")
+
+    def visualize_clusters(self, 
+                        dim_reduction: str = 'pca',
+                        filename: Optional[str] = None) -> None:
+        """
+        Visualize clusters in 2D space
+        
+        Args:
+            dim_reduction (str): Dimensionality reduction technique ('pca' or 'tsne')
+            filename (Optional[str]): Output filename, if None displays plot
+        """
+        try:
+            import matplotlib.pyplot as plt
+            import seaborn as sns
+            
+            if not hasattr(self, 'features_processed') or len(self.features_processed) == 0:
+                self.logger.warning("No processed features available for visualization")
+                return
+                
+            # Get feature matrix
+            X = self.features_processed.values
+            
+            # Reduce to 2D for visualization
+            if dim_reduction.lower() == 'tsne':
+                from sklearn.manifold import TSNE
+                reducer = TSNE(n_components=2, random_state=42)
+            else:  # Default to PCA
+                from sklearn.decomposition import PCA
+                reducer = PCA(n_components=2, random_state=42)
+                
+            # Apply dimensionality reduction
+            X_2d = reducer.fit_transform(X)
+            
+            # Create DataFrame for plotting
+            viz_df = pd.DataFrame({
+                'x': X_2d[:, 0],
+                'y': X_2d[:, 1],
+                'cluster': self.cluster_labels,
+                'date': self.features_processed.index
+            })
+            
+            # Set up plot
+            plt.figure(figsize=(12, 8))
+            
+            # Define cluster colors and markers
+            unique_clusters = viz_df['cluster'].unique()
+            
+            # Skip noise points (cluster -1) in color mapping
+            valid_clusters = [c for c in unique_clusters if c >= 0]
+            
+            # Create colormap for clusters
+            cluster_colors = plt.cm.tab10(np.linspace(0, 1, len(valid_clusters)))
+            
+            # Plot each cluster
+            for i, cluster in enumerate(valid_clusters):
+                cluster_data = viz_df[viz_df['cluster'] == cluster]
+                plt.scatter(
+                    cluster_data['x'], 
+                    cluster_data['y'],
+                    s=50, 
+                    c=[cluster_colors[i]], 
+                    label=f"Cluster {cluster}",
+                    alpha=0.7
+                )
+                
+            # Plot noise points with distinct style if present
+            if -1 in unique_clusters:
+                noise_data = viz_df[viz_df['cluster'] == -1]
+                plt.scatter(
+                    noise_data['x'], 
+                    noise_data['y'],
+                    s=30, 
+                    c='gray', 
+                    marker='x',
+                    label="Noise",
+                    alpha=0.5
+                )
+                
+            # Add timeline effects (connecting points in chronological order)
+            dates = viz_df['date'].sort_values().unique()
+            if len(dates) > 1:
+                # Get points in chronological order
+                timeline_df = viz_df.sort_values('date')
+                
+                # Plot lines connecting points
+                plt.plot(timeline_df['x'], timeline_df['y'], 
+                    c='gray', alpha=0.2, linewidth=0.5)
+                
+                # Highlight start and end points
+                plt.scatter(
+                    timeline_df['x'].iloc[0], 
+                    timeline_df['y'].iloc[0],
+                    s=100, 
+                    c='none', 
+                    edgecolor='green',
+                    linewidth=2,
+                    label="Start"
+                )
+                
+                plt.scatter(
+                    timeline_df['x'].iloc[-1], 
+                    timeline_df['y'].iloc[-1],
+                    s=100, 
+                    c='none', 
+                    edgecolor='red',
+                    linewidth=2,
+                    label="End"
+                )
+                
+            plt.title(f"Market Regimes Visualization ({dim_reduction.upper()})")
+            plt.xlabel(f"{dim_reduction.upper()} Component 1")
+            plt.ylabel(f"{dim_reduction.upper()} Component 2")
+            plt.legend()
+            
+            # Add grid
+            plt.grid(True, alpha=0.3)
+            
+            # Save or display
+            if filename:
+                plt.savefig(filename, dpi=300, bbox_inches='tight')
+                self.logger.info(f"Saved cluster visualization to {filename}")
+            else:
+                plt.show()
+                
+        except ImportError:
+            self.logger.warning("Could not visualize clusters. Required libraries missing.")
+
+    def plot_regime_timeline(self, 
+                        with_prices: bool = True,
+                        filename: Optional[str] = None) -> None:
+        """
+        Plot timeline of detected regimes with price overlay
+        
+        Args:
+            with_prices (bool): Whether to include price chart
+            filename (Optional[str]): Output filename, if None displays plot
+        """
+        try:
+            import matplotlib.pyplot as plt
+            import matplotlib.dates as mdates
+            import matplotlib.patches as patches
+            
+            if not self.regimes:
+                self.logger.warning("No regimes to plot")
+                return
+                
+            # Set up plot
+            fig, ax1 = plt.subplots(figsize=(14, 8))
+            
+            # Plot price if requested
+            if with_prices:
+                ax1.plot(self.df.index, self.df['Close'], color='black', alpha=0.7, linewidth=1.5)
+                ax1.set_ylabel('Price', fontsize=12)
+                ax1.set_xlabel('Date', fontsize=12)
+                
+                # Format y-axis
+                ax1.tick_params(axis='y', labelsize=10)
+                
+                # Add price grid
+                ax1.grid(True, alpha=0.3)
+                
+            # Add regime background colors
+            ylim = ax1.get_ylim()
+            height = ylim[1] - ylim[0]
+            
+            # Define colors for different regime types
+            regime_colors = {
+                'bullish_trending': 'lightgreen',
+                'bullish_volatile': 'palegreen',
+                'bullish_quiet': 'honeydew',
+                'recovery': 'limegreen',
+                'bearish_trending': 'lightcoral',
+                'bearish_volatile': 'mistyrose',
+                'bearish_quiet': 'lavenderblush',
+                'crash': 'tomato',
+                'high_volatility': 'wheat',
+                'low_volatility_range': 'lightsteelblue',
+                'transitional': 'lightgray',
+                'mean_reverting': 'lightskyblue',
+                'undefined': 'whitesmoke'
+            }
+            
+            # Add default color for any regime types not in the dictionary
+            default_color = 'lightgray'
+            
+            # Plot each regime as a colored background
+            for i, regime in enumerate(self.regimes):
+                # Get color for this regime
+                color = regime_colors.get(regime.regime_type, default_color)
+                
+                # Create rectangle for this regime
+                rect = patches.Rectangle(
+                    (mdates.date2num(regime.start_date), ylim[0]),
+                    mdates.date2num(regime.end_date) - mdates.date2num(regime.start_date),
+                    height,
+                    facecolor=color,
+                    alpha=0.4,
+                    edgecolor='none'
+                )
+                ax1.add_patch(rect)
+                
+                # Add regime labels
+                mid_date = regime.start_date + (regime.end_date - regime.start_date) / 2
+                
+                # Skip labels that would be too crowded
+                if i > 0:
+                    prev_mid = self.regimes[i-1].start_date + (self.regimes[i-1].end_date - self.regimes[i-1].start_date) / 2
+                    days_diff = (mid_date - prev_mid).days
+                    
+                    # Skip if less than 30 days from previous label
+                    if days_diff < 30:
+                        continue
+                
+                ax1.text(
+                    mid_date, 
+                    ylim[0] + height * 0.05,  # Position at bottom of plot
+                    regime.regime_type.replace('_', ' ').title(),
+                    fontsize=9,
+                    ha='center',
+                    rotation=90,
+                    color='black'
+                )
+                
+            # Format x-axis dates
+            ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+            ax1.xaxis.set_major_locator(mdates.YearLocator())
+            plt.xticks(rotation=45, ha='right')
+            
+            # Create legend for regime types
+            legend_handles = []
+            for regime_type, color in regime_colors.items():
+                # Only add to legend if this regime type appears in data
+                if any(r.regime_type == regime_type for r in self.regimes):
+                    handle = patches.Patch(
+                        facecolor=color,
+                        alpha=0.4,
+                        label=regime_type.replace('_', ' ').title()
+                    )
+                    legend_handles.append(handle)
+                    
+            plt.legend(handles=legend_handles, loc='upper left', fontsize=9)
+            
+            plt.title('Market Regimes Timeline', fontsize=14)
+            plt.tight_layout()
+            
+            # Save or display
+            if filename:
+                plt.savefig(filename, dpi=300, bbox_inches='tight')
+                self.logger.info(f"Saved regime timeline to {filename}")
+            else:
+                plt.show()
+                
+        except ImportError:
+            self.logger.warning("Could not plot regime timeline. matplotlib required.")

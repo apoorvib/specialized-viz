@@ -1,230 +1,8 @@
-# Set up results container
-        performance = []
-        
-        # Calculate returns for each regime
-        for regime in self.regimes:
-            # Get regime data
-            regime_data = self.df[regime.start_date:regime.end_date]
-            
-            if len(regime_data) < 2:
-                continue
-                
-            # Calculate metrics
-            returns = regime_data['Close'].pct_change().dropna()
-            
-            # Calculate forward returns for each day in regime
-            forward_returns = []
-            for date in regime_data.index[:-1]:  # Skip last day
-                try:
-                    if market_days:
-                        # Get return over next N market days
-                        idx = regime_data.index.get_loc(date)
-                        if idx + return_horizon < len(regime_data):
-                            end_idx = idx + return_horizon
-                        else:
-                            end_idx = len(regime_data) - 1
-                            
-                        end_date = regime_data.index[end_idx]
-                    else:
-                        # Get return over next N calendar days
-                        end_date = date + pd.Timedelta(days=return_horizon)
-                        if end_date > regime.end_date:
-                            end_date = regime.end_date
-                    
-                    start_price = regime_data.loc[date, 'Close']
-                    end_price = self.df.loc[end_date, 'Close']
-                    fwd_return = (end_price / start_price - 1) * 100  # percentage
-                    forward_returns.append(fwd_return)
-                except:
-                    continue
-            
-            # Calculate performance metrics
-            perf = {
-                'regime': regime.regime_type,
-                'start_date': regime.start_date,
-                'end_date': regime.end_date,
-                'duration_days': (regime.end_date - regime.start_date).days,
-                'volatility': regime.volatility,
-                'trend': regime.trend,
-                'volume': regime.volume,
-                'daily_return_mean': returns.mean() * 100,
-                'daily_return_std': returns.std() * 100,
-                'daily_sharpe': returns.mean() / returns.std() if returns.std() > 0 else 0,
-                'win_rate': (returns > 0).mean() * 100,
-                'total_return': (regime_data['Close'].iloc[-1] / regime_data['Close'].iloc[0] - 1) * 100
-            }
-            
-            # Add forward-looking metrics
-            if forward_returns:
-                perf.update({
-                    f'forward_{return_horizon}d_return_mean': np.mean(forward_returns),
-                    f'forward_{return_horizon}d_return_std': np.std(forward_returns),
-                    f'forward_{return_horizon}d_win_rate': (np.array(forward_returns) > 0).mean() * 100
-                })
-                
-            performance.append(perf)
-        
-        # Convert to DataFrame
-        perf_df = pd.DataFrame(performance)
-        
-        # Add aggregation by regime type
-        if not perf_df.empty:
-            regime_groups = perf_df.groupby('regime')
-            
-            agg_metrics = regime_groups.agg({
-                'duration_days': 'mean',
-                'daily_return_mean': 'mean',
-                'daily_return_std': 'mean',
-                'daily_sharpe': 'mean',
-                'win_rate': 'mean',
-                'total_return': 'mean'
-            })
-            
-            if f'forward_{return_horizon}d_return_mean' in perf_df.columns:
-                forward_agg = regime_groups.agg({
-                    f'forward_{return_horizon}d_return_mean': 'mean',
-                    f'forward_{return_horizon}d_return_std': 'mean',
-                    f'forward_{return_horizon}d_win_rate': 'mean'
-                })
-                agg_metrics = pd.concat([agg_metrics, forward_agg], axis=1)
-            
-            # Add to performance dataframe
-            perf_df = pd.concat([perf_df, agg_metrics.reset_index().assign(type='average')])
-        
-        return perf_df
-    
-    def create_trading_signals(self,
-                             regime_rules: Dict[str, str] = None) -> pd.DataFrame:
-        """
-        Create trading signals based on regime classification
-        
-        Args:
-            regime_rules (Dict[str, str]): Mapping of regime type to action
-            
-        Returns:
-            pd.DataFrame: Trading signals
-        """
-        if not self.regimes:
-            self.logger.warning("No regimes available for signal generation")
-            return pd.DataFrame()
-            
-        # Default rules if none provided
-        if regime_rules is None:
-            regime_rules = {
-                'bullish_trending': 'buy',
-                'bullish_volatile': 'buy',
-                'bullish_quiet': 'buy',
-                'recovery': 'buy',
-                'bearish_trending': 'sell',
-                'bearish_volatile': 'sell',
-                'bearish_quiet': 'sell',
-                'crash': 'sell',
-                'high_volatility': 'neutral',
-                'low_volatility_range': 'neutral',
-                'transitional': 'neutral',
-                'undefined': 'neutral'
-            }
-        
-        # Create signals dataframe
-        signals = pd.DataFrame(index=self.df.index)
-        signals['regime'] = pd.Series(dtype=str)
-        signals['signal'] = pd.Series(dtype=str)
-        signals['confidence'] = pd.Series(dtype=float)
-        
-        # Fill signals based on regimes
-        for regime in self.regimes:
-            date_range = self.df[regime.start_date:regime.end_date].index
-            signals.loc[date_range, 'regime'] = regime.regime_type
-            signals.loc[date_range, 'signal'] = regime_rules.get(regime.regime_type, 'neutral')
-            signals.loc[date_range, 'confidence'] = regime.confidence
-        
-        # Convert signals to numeric (-1, 0, 1)
-        signals['position'] = 0
-        signals.loc[signals['signal'] == 'buy', 'position'] = 1
-        signals.loc[signals['signal'] == 'sell', 'position'] = -1
-        
-        # Add close price for reference
-        signals['close'] = self.df['Close']
-        
-        return signals
-    
-    def export_regime_data(self, filename: str = 'regime_data.csv') -> None:
-        """
-        Export regime data to CSV for further analysis
-        
-        Args:
-            filename (str): Output filename
-        """
-        if not self.regimes:
-            self.logger.warning("No regimes available for export")
-            return
-            
-        # Create export data
-        export_data = []
-        
-        for regime in self.regimes:
-            # Create basic record
-            record = {
-                'regime_type': regime.regime_type,
-                'start_date': regime.start_date,
-                'end_date': regime.end_date,
-                'duration_days': (regime.end_date - regime.start_date).days,
-                'volatility': regime.volatility,
-                'trend': regime.trend,
-                'volume': regime.volume,
-                'confidence': regime.confidence,
-                'stability': regime.stability_score,
-                'expected_duration': regime.expected_duration,
-                'cluster_id': regime.cluster_id
-            }
-            
-            # Add top feature importances
-            if regime.feature            
-        # Calculate metrics
-        results = {
-            'count': len(filtered_regimes),
-            'avg_duration_days': np.mean([
-                (r.end_date - r.start_date).days for r in filtered_regimes
-            ]),
-            'avg_stability': np.mean([r.stability_score for r in filtered_regimes]),
-            'top_features': self._get_top_features_for_regimes(filtered_regimes),
-            'common_transitions': self._get_common_transitions(filtered_regimes)
-        }
-        
-        # Add price performance if we have data
-        if filtered_regimes:
-            price_performance = []
-            for regime in filtered_regimes:
-                try:
-                    start_price = self.df.loc[regime.start_date, 'Close']
-                    end_price = self.df.loc[regime.end_date, 'Close']
-                    perf = (end_price / start_price - 1) * 100
-                    price_performance.append(perf)
-                except:
-                    continue
-                    
-            if price_performance:
-                results['avg_price_change_pct'] = np.mean(price_performance)
-                results['price_change_std'] = np.std(price_performance)
-                
-        return results
-    
-    def _get_top_features_for_regimes(self, 
-                                   regimes: List[ClusteringMarketRegime], 
-                                   top_n: int = 5) -> Dict[str, float]:
-        """
-        Get top features for a set of regimes
-        
-        Args:
-            regimes (List[ClusteringMarketRegime]): Regimes to analyze
-            top_n (int): Number of top features to return
-            
-        Returns:
-            Dict[str, float]:import numpy as np
+import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler, RobustScaler
 from sklearn.decomposition import PCA
-from sklearn.cluster import DBSCAN, KMeans
+from sklearn.cluster import DBSCAN, KMeans, HDBSCAN
 from sklearn.mixture import GaussianMixture
 from sklearn.metrics import silhouette_score, calinski_harabasz_score
 from scipy.cluster.hierarchy import linkage, fcluster
@@ -257,7 +35,7 @@ class ClusteringConfig:
     n_clusters: int = 5  # Default number of regimes for k-means and GMM
     eps: float = 0.5     # DBSCAN epsilon parameter
     min_samples: int = 5  # DBSCAN min_samples parameter
-    cluster_method: str = 'gmm'  # 'gmm', 'kmeans', 'dbscan', 'hierarchical'
+    cluster_method: str = 'gmm'  # 'gmm', 'kmeans', 'dbscan', 'hierarchical', 'hdbscan', 'som'
     
     # Training parameters
     lookback_window: int = 252  # Default 1 year for training
@@ -292,7 +70,7 @@ class ClusteringConfig:
             os.makedirs(self.cache_dir)
             
         # Validate clustering method
-        valid_methods = ['gmm', 'kmeans', 'dbscan', 'hierarchical']
+        valid_methods = ['gmm', 'kmeans', 'dbscan', 'hierarchical', 'hdbscan', 'som']
         if self.cluster_method not in valid_methods:
             raise ValueError(f"Invalid clustering method '{self.cluster_method}'. "
                             f"Must be one of {valid_methods}")
@@ -770,6 +548,98 @@ class ClusteringMarketRegimeAnalyzer:
             
             # Calculate approximate probabilities based on distance
             self._calculate_hierarchical_probabilities(X, Z)
+        
+        elif self.config.cluster_method == 'hdbscan':
+            # Use HDBSCAN for improved density-based clustering
+            try:
+                import hdbscan
+                self.cluster_model = hdbscan.HDBSCAN(
+                    min_cluster_size=self.config.min_samples,
+                    min_samples=self.config.min_samples // 2,  # Default to half min_samples
+                    prediction_data=True
+                )
+                self.cluster_labels = pd.Series(
+                    self.cluster_model.fit_predict(X),
+                    index=self.features_processed.index
+                )
+                
+                # Calculate probabilities using HDBSCAN's probabilities method
+                self._calculate_hdbscan_probabilities(X)
+            except ImportError:
+                self.logger.warning("HDBSCAN package not found, falling back to DBSCAN")
+                # Fall back to DBSCAN
+                self.config.cluster_method = 'dbscan'
+                self._perform_clustering()
+                return
+        
+        elif self.config.cluster_method == 'som':
+            # Use Self-Organizing Maps
+            try:
+                from minisom import MiniSom
+                
+                # Define SOM grid size based on data
+                som_x = int(np.sqrt(self.config.n_clusters) * 2)
+                som_y = int(np.sqrt(self.config.n_clusters) * 2)
+                
+                # Initialize and train SOM
+                self.cluster_model = MiniSom(
+                    som_x, som_y, X.shape[1], 
+                    sigma=1.0, learning_rate=0.5,
+                    random_seed=42
+                )
+                self.cluster_model.train_random(X, 5000)
+                
+                # Map data points to SOM grid
+                som_clusters = np.zeros(X.shape[0], dtype=int)
+                for i, x in enumerate(X):
+                    som_clusters[i] = np.ravel_multi_index(
+                        self.cluster_model.winner(x), 
+                        (som_x, som_y)
+                    )
+                
+                # Reduce number of clusters using hierarchical clustering if needed
+                if som_x * som_y > self.config.n_clusters:
+                    # Get unique winning nodes and their coordinates
+                    unique_winners = np.unique(som_clusters)
+                    winner_coords = np.array([
+                        np.unravel_index(w, (som_x, som_y)) 
+                        for w in unique_winners
+                    ])
+                    
+                    # Perform hierarchical clustering on SOM grid
+                    if len(winner_coords) > 1:
+                        Z = linkage(winner_coords, method='ward')
+                        cluster_map = fcluster(
+                            Z, t=self.config.n_clusters, criterion='maxclust'
+                        ) - 1  # Zero-based indexing
+                        
+                        # Map SOM nodes to final clusters
+                        cluster_lookup = {
+                            unique_winners[i]: cluster_map[i] 
+                            for i in range(len(unique_winners))
+                        }
+                        final_clusters = np.array([
+                            cluster_lookup.get(c, -1) for c in som_clusters
+                        ])
+                    else:
+                        # Only one unique cluster found
+                        final_clusters = np.zeros(X.shape[0], dtype=int)
+                else:
+                    final_clusters = som_clusters
+                    
+                self.cluster_labels = pd.Series(
+                    final_clusters,
+                    index=self.features_processed.index
+                )
+                
+                # Calculate SOM-based probabilities
+                self._calculate_som_probabilities(X)
+            except ImportError:
+                self.logger.warning("MiniSom package not found, falling back to KMeans")
+                # Fall back to KMeans
+                self.config.cluster_method = 'kmeans'
+                self._perform_clustering()
+                return
             
         # Calculate cluster quality metrics
         self._calculate_cluster_quality(X)
@@ -825,6 +695,18 @@ class ClusteringMarketRegimeAnalyzer:
         for i in range(X.shape[0]):
             point = X[i]
             distances = np.array([np.linalg.norm(point - center) for center in cluster_centers])
+            # Calculate similarity scores
+            similarities = 1 / (1 + distances)
+            # Normalize
+            probs[i] = similarities / similarities.sum()
+        
+        # Convert to DataFrame
+        self.cluster_probs = pd.DataFrame(
+            probs,
+            index=self.features_processed.index,
+            columns=[f'Cluster_{i}' for i in unique_clusters]
+        )i]
+            distances = np.array([np.linalg.norm(point - center) for center in cluster_centers])
             if self.cluster_labels.iloc[i] == -1:  # Noise point
                 probs[i] = 0  # No strong association with any cluster
             else:
@@ -863,88 +745,4 @@ class ClusteringMarketRegimeAnalyzer:
         
         # Calculate distances and convert to probabilities
         for i in range(X.shape[0]):
-            point = X[i]
-            distances = np.array([np.linalg.norm(point - center) for center in cluster_centers])
-            # Calculate similarity scores
-            similarities = 1 / (1 + distances)
-            # Normalize
-            probs[i] = similarities / similarities.sum()
-        
-        # Convert to DataFrame
-        self.cluster_probs = pd.DataFrame(
-            probs,
-            index=self.features_processed.index,
-            columns=[f'Cluster_{i}' for i in unique_clusters]
-        )
-    
-    def _calculate_cluster_quality(self, X: np.ndarray) -> None:
-        """
-        Calculate cluster quality metrics
-        
-        Args:
-            X (np.ndarray): Feature matrix
-        """
-        try:
-            # Silhouette score (only for more than one cluster)
-            if len(np.unique(self.cluster_labels)) > 1 and -1 not in self.cluster_labels.values:
-                self.silhouette_avg = silhouette_score(X, self.cluster_labels)
-                self.logger.info(f"Silhouette Score: {self.silhouette_avg:.4f}")
-            else:
-                self.silhouette_avg = None
-                
-            # Calinski-Harabasz Index (if more than one cluster and no noise points)
-            if len(np.unique(self.cluster_labels)) > 1 and -1 not in self.cluster_labels.values:
-                self.ch_score = calinski_harabasz_score(X, self.cluster_labels)
-                self.logger.info(f"Calinski-Harabasz Score: {self.ch_score:.4f}")
-            else:
-                self.ch_score = None
-                
-        except Exception as e:
-            self.logger.warning(f"Error calculating cluster quality: {str(e)}")
-            self.silhouette_avg = None
-            self.ch_score = None
-    
-    def _map_clusters_to_regimes(self) -> None:
-        """Map identified clusters to market regimes"""
-        self.logger.info("Mapping clusters to market regimes")
-        
-        # Get OHLCV data corresponding to analysis period
-        df_subset = self.df.loc[self.cluster_labels.index]
-        
-        # Calculate basic price statistics for each cluster
-        cluster_stats = {}
-        for cluster_id in sorted(self.cluster_labels.unique()):
-            if cluster_id == -1:  # Skip noise points in DBSCAN
-                continue
-                
-            # Get rows belonging to this cluster
-            mask = self.cluster_labels == cluster_id
-            cluster_df = df_subset[mask]
-            
-            if len(cluster_df) == 0:
-                continue
-                
-            # Calculate statistics
-            returns = cluster_df['Close'].pct_change().dropna()
-            
-            stats = {
-                'count': len(cluster_df),
-                'avg_return': returns.mean(),
-                'return_std': returns.std(),
-                'return_skew': returns.skew() if len(returns) > 2 else 0,
-                'sharpe': returns.mean() / returns.std() if returns.std() > 0 else 0,
-                'volatility': returns.std() * np.sqrt(252),
-                'max_drawdown': self._calculate_max_drawdown(cluster_df['Close']),
-                'win_rate': (returns > 0).mean(),
-                'avg_volume': cluster_df['Volume'].mean() if 'Volume' in cluster_df else None,
-                'volume_trend': (
-                    cluster_df['Volume'].iloc[-1] / cluster_df['Volume'].iloc[0] - 1
-                    if 'Volume' in cluster_df and len(cluster_df) > 1 else None
-                ),
-                'price_trend': cluster_df['Close'].iloc[-1] / cluster_df['Close'].iloc[0] - 1,
-                'trend_strength': abs(pearsonr(
-                    np.arange(len(cluster_df)), 
-                    cluster_df['Close'].values
-                )[0]) if len(cluster_df) > 2 else 0,
-                'mean_features': self.features.loc[mask].mean()
-            }
+            point = X[

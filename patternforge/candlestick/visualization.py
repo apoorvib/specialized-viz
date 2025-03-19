@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.patches import Rectangle
 from matplotlib.figure import Figure
-import seaborn as sns
+#import seaborn as sns
 
 # Type hints
 from typing import Dict, List, Tuple, Optional, Callable, Union, Any

@@ -866,7 +866,121 @@ class ClusteringMarketRegimeAnalyzer:
             avg_transitions.items(),
             key=lambda item: item[1],
             reverse=True
-        ))                
+        ))              
+        
+    def _make_cache_key(self, start_date: pd.Timestamp, end_date: pd.Timestamp) -> str:
+        """Create cache key based on data range and config
+        
+        Args:
+            start_date (pd.Timestamp): Start date for analysis
+            end_date (pd.Timestamp): End date for analysis
+            
+        Returns:
+            str: Cache key string
+        """
+        # Format dates
+        start_str = start_date.strftime('%Y%m%d')
+        end_str = end_date.strftime('%Y%m%d')
+        
+        # Include key config parameters in cache key
+        method = self.config.cluster_method
+        n_clusters = self.config.n_clusters
+        use_pca = 'pca' if self.config.use_pca else 'nopca'
+        
+        # Create hash of key parameters
+        params_hash = hash((
+            method, 
+            n_clusters, 
+            use_pca, 
+            self.config.lookback_window,
+            tuple(self.config.return_periods),
+            tuple(self.config.volatility_periods),
+            tuple(self.config.trend_periods)
+        )) % 10000  # Keep hash short
+        
+        return f"regimes_{start_str}_{end_str}_{method}_{n_clusters}_{use_pca}_{params_hash}"  
+
+    def _load_from_cache(self, cache_key: str) -> bool:
+        """Load results from cache
+        
+        Args:
+            cache_key (str): Cache key for results
+            
+        Returns:
+            bool: True if loaded successfully, False otherwise
+        """
+        if not self.config.cache_results:
+            return False
+            
+        cache_path = os.path.join(self.cache_dir, f"{cache_key}.pkl")
+        
+        if not os.path.exists(cache_path):
+            return False
+            
+        try:
+            # Load from pickle file
+            with open(cache_path, 'rb') as f:
+                cache_data = pickle.load(f)
+                
+            # Restore regimes
+            self.regimes = [
+                ClusteringMarketRegime.from_dict(regime_dict)
+                for regime_dict in cache_data['regimes']
+            ]
+            
+            # Restore transition matrix
+            if 'transition_matrix' in cache_data and cache_data['transition_matrix']:
+                self.transition_matrix = pd.DataFrame.from_dict(cache_data['transition_matrix'])
+            
+            # Restore cluster labels
+            if 'cluster_labels' in cache_data:
+                self.cluster_labels = pd.Series(cache_data['cluster_labels'])
+                
+            self.logger.info(f"Loaded results from cache {cache_path}")
+            return True
+        except Exception as e:
+            self.logger.warning(f"Error loading from cache: {str(e)}")
+            return False
+        
+    def _save_to_cache(self, cache_key: str) -> None:
+        """Save results to cache
+        
+        Args:
+            cache_key (str): Cache key for results
+        """
+        if not self.config.cache_results:
+            return
+            
+        try:
+            # Create cache dir if it doesn't exist
+            if not os.path.exists(self.cache_dir):
+                os.makedirs(self.cache_dir)
+                
+            # Convert regimes to dictionaries
+            regimes_dict = [regime.to_dict() for regime in self.regimes]
+            
+            # Create data to save
+            cache_data = {
+                'regimes': regimes_dict,
+                'transition_matrix': self.transition_matrix.to_dict() if not self.transition_matrix.empty else {},
+                'cluster_labels': self.cluster_labels.to_dict(),
+                'config': {
+                    'method': self.config.cluster_method,
+                    'n_clusters': self.config.n_clusters,
+                    'use_pca': self.config.use_pca,
+                    'feature_selection': self.config.feature_selection
+                },
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            # Save to pickle file
+            cache_path = os.path.join(self.cache_dir, f"{cache_key}.pkl")
+            with open(cache_path, 'wb') as f:
+                pickle.dump(cache_data, f)
+                
+            self.logger.info(f"Cached results to {cache_path}")
+        except Exception as e:
+            self.logger.warning(f"Error saving to cache: {str(e)}")
         
     def find_similar_historical_regimes(self, 
                                     current_features: np.ndarray,

@@ -6,8 +6,10 @@ import time
 import json
 import math
 import warnings
-from collections import defaultdict
+from collections import defaultdict, Counter
 from datetime import datetime, timedelta
+import logging
+import pickle
 
 # Data processing
 import numpy as np
@@ -22,6 +24,7 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.patches import Rectangle
 from matplotlib.figure import Figure
+import seaborn as sns
 
 # Type hints
 from typing import Dict, List, Tuple, Optional, Callable, Union, Any
@@ -30,7 +33,13 @@ from typing import Dict, List, Tuple, Optional, Callable, Union, Any
 from dataclasses import dataclass, field, asdict
 
 # Machine learning
-from sklearn.cluster import DBSCAN
+from sklearn.preprocessing import StandardScaler, RobustScaler
+from sklearn.decomposition import PCA
+from sklearn.cluster import DBSCAN, KMeans
+from sklearn.mixture import GaussianMixture
+from sklearn.metrics import silhouette_score, calinski_harabasz_score
+from scipy.cluster.hierarchy import linkage, fcluster
+from scipy.stats import pearsonr
 
 # Local imports
 from .patterns import CandlestickPatterns

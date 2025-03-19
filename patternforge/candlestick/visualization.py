@@ -10565,3 +10565,2341 @@ class ConfigurationManager:
                 return False
         
         return True
+
+# Setup logging
+# logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# logger = logging.getLogger('ClusteringMarketRegimeAnalyzer')
+
+@dataclass
+class ClusteringConfig:
+    """Configuration for clustering-based regime detection"""
+    # Feature extraction parameters
+    return_periods: List[int] = field(default_factory=lambda: [1, 5, 10, 20, 60])
+    volatility_periods: List[int] = field(default_factory=lambda: [5, 10, 20, 60])
+    volume_periods: List[int] = field(default_factory=lambda: [5, 10, 20])
+    trend_periods: List[int] = field(default_factory=lambda: [10, 20, 50, 200])
+    autocorr_lags: List[int] = field(default_factory=lambda: [1, 5, 10, 20])
+    
+    # Clustering parameters
+    n_clusters: int = 5  # Default number of regimes for k-means and GMM
+    eps: float = 0.5     # DBSCAN epsilon parameter
+    min_samples: int = 5  # DBSCAN min_samples parameter
+    cluster_method: str = 'gmm'  # 'gmm', 'kmeans', 'dbscan', 'hierarchical'
+    
+    # Training parameters
+    lookback_window: int = 252  # Default 1 year for training
+    feature_selection: bool = True
+    use_pca: bool = True
+    pca_components: int = 10
+    use_robust_scaling: bool = True
+    
+    # Regime mapping
+    regime_names: Dict[int, str] = field(default_factory=lambda: {
+        0: 'bullish_trending',
+        1: 'bearish_trending',
+        2: 'high_volatility',
+        3: 'low_volatility_range',
+        4: 'transition'
+    })
+    
+    # Validation
+    cross_validate: bool = True
+    validation_periods: int = 5
+    
+    # Runtime
+    parallel_processing: bool = True
+    max_workers: int = 4
+    cache_results: bool = True
+    cache_dir: str = '.regime_cache'
+    
+    def __post_init__(self):
+        """Validate configuration parameters"""
+        # Ensure cache directory exists
+        if self.cache_results and not os.path.exists(self.cache_dir):
+            os.makedirs(self.cache_dir)
+            
+        # Validate clustering method
+        valid_methods = ['gmm', 'kmeans', 'dbscan', 'hierarchical']
+        if self.cluster_method not in valid_methods:
+            raise ValueError(f"Invalid clustering method '{self.cluster_method}'. "
+                            f"Must be one of {valid_methods}")
+        
+        # Ensure proper number of regime names if using fixed clusters
+        if self.cluster_method in ['kmeans', 'gmm'] and len(self.regime_names) != self.n_clusters:
+            logger.warning(f"Number of regime names ({len(self.regime_names)}) doesn't match "
+                         f"n_clusters ({self.n_clusters}). Regime mapping may be inconsistent.")
+
+@dataclass
+class ClusteringMarketRegime:
+    """Extended market regime class with clustering-specific information"""
+    regime_type: str
+    volatility: str
+    trend: str
+    volume: str
+    start_date: pd.Timestamp
+    end_date: pd.Timestamp
+    confidence: float
+    
+    # Clustering-specific attributes
+    cluster_id: int
+    feature_vector: np.ndarray = None
+    probability: Dict[int, float] = None
+    distance_to_centroid: float = None
+    silhouette_score: float = None
+    
+    # Transition probabilities
+    transition_probs: Dict[str, float] = None
+    
+    # Stability metrics
+    stability_score: float = None
+    expected_duration: int = None
+    
+    # Feature importance for this regime
+    feature_importance: Dict[str, float] = None
+    
+    def __post_init__(self):
+        """Convert types and initialize empty containers"""
+        if self.probability is None:
+            self.probability = {}
+        if self.transition_probs is None:
+            self.transition_probs = {}
+        if self.feature_importance is None:
+            self.feature_importance = {}
+            
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary representation"""
+        result = {
+            'regime_type': self.regime_type,
+            'volatility': self.volatility,
+            'trend': self.trend,
+            'volume': self.volume,
+            'start_date': self.start_date,
+            'end_date': self.end_date,
+            'confidence': self.confidence,
+            'cluster_id': self.cluster_id,
+            'probability': self.probability,
+            'distance_to_centroid': self.distance_to_centroid,
+            'silhouette_score': self.silhouette_score,
+            'stability_score': self.stability_score,
+            'expected_duration': self.expected_duration,
+            'transition_probs': self.transition_probs,
+            'feature_importance': self.feature_importance
+        }
+        
+        # Handle conversion of numpy arrays
+        if self.feature_vector is not None:
+            result['feature_vector'] = self.feature_vector.tolist()
+        
+        return result
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'ClusteringMarketRegime':
+        """Create instance from dictionary"""
+        # Convert feature_vector back to numpy array if present
+        if 'feature_vector' in data and data['feature_vector'] is not None:
+            data['feature_vector'] = np.array(data['feature_vector'])
+            
+        return cls(**data)
+
+class ClusteringMarketRegimeAnalyzer:
+    """
+    Market regime analyzer using clustering techniques
+    
+    This class implements advanced market regime detection using 
+    unsupervised learning methods to identify natural market states
+    based on multiple features.
+    """
+    
+    def __init__(self, 
+                 df: pd.DataFrame, 
+                 config: Optional[ClusteringConfig] = None):
+        """
+        Initialize clustering market regime analyzer
+        
+        Args:
+            df (pd.DataFrame): OHLCV data
+            config (Optional[ClusteringConfig]): Configuration parameters
+        """
+        self._validate_dataframe(df)
+        self.df = df.copy()
+        self.config = config or ClusteringConfig()
+        
+        # Initialize containers
+        self.features = pd.DataFrame(index=df.index)
+        self.feature_importances = {}
+        self.cluster_labels = pd.Series(index=df.index, dtype=int)
+        self.cluster_probs = pd.DataFrame(index=df.index)
+        self.regimes = []
+        self.transition_matrix = pd.DataFrame()
+        
+        # Initialize transformers
+        self.scaler = None
+        self.pca = None
+        self.feature_scaler = None
+        
+        # Initialize clustering model
+        self.cluster_model = None
+        
+        # Setup cache
+        self._init_cache()
+    
+    def _validate_dataframe(self, df: pd.DataFrame) -> None:
+        """
+        Validate input DataFrame has required columns
+        
+        Args:
+            df (pd.DataFrame): Input DataFrame
+            
+        Raises:
+            ValueError: If required columns are missing
+        """
+        required_columns = ['Open', 'High', 'Low', 'Close']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        
+        if missing_columns:
+            raise ValueError(f"Missing required columns: {missing_columns}")
+        
+        if not isinstance(df.index, pd.DatetimeIndex):
+            try:
+                # Try to convert index to datetime
+                df.index = pd.to_datetime(df.index)
+            except:
+                raise ValueError("DataFrame index must be DatetimeIndex")
+    
+    def _init_cache(self) -> None:
+        """Initialize caching system"""
+        if self.config.cache_results:
+            self.cache_dir = os.path.join(
+                self.config.cache_dir, 
+                f"cache_{self.config.cluster_method}"
+            )
+            
+            if not os.path.exists(self.cache_dir):
+                os.makedirs(self.cache_dir)
+    
+    def detect_regimes(self, 
+                      start_date: Optional[pd.Timestamp] = None,
+                      end_date: Optional[pd.Timestamp] = None,
+                      force_recompute: bool = False) -> List[ClusteringMarketRegime]:
+        """
+        Detect market regimes using clustering approach
+        
+        Args:
+            start_date (Optional[pd.Timestamp]): Analysis start date
+            end_date (Optional[pd.Timestamp]): Analysis end date
+            force_recompute (bool): Recompute even if cached results exist
+            
+        Returns:
+            List[ClusteringMarketRegime]: Detected market regimes
+            
+        This is the main entry point for regime detection.
+        """
+        # Set date range
+        start_date = start_date or self.df.index[0]
+        end_date = end_date or self.df.index[-1]
+        
+        # Check cache first
+        cache_key = self._make_cache_key(start_date, end_date)
+        if not force_recompute and self._load_from_cache(cache_key):
+            logger.info(f"Loaded regimes from cache for {start_date} to {end_date}")
+            return self.regimes
+        
+        logger.info(f"Detecting regimes from {start_date} to {end_date}")
+        
+        # Extract and preprocess features
+        self._preprocess_features(start_date, end_date)
+        
+        # Perform clustering
+        self._perform_clustering()
+        
+        # Map clusters to regimes
+        self._map_clusters_to_regimes()
+        
+        # Analyze transitions 
+        self._analyze_regime_transitions()
+        
+        # Calculate regime probabilities and stability
+        self._calculate_regime_probabilities()
+        
+        # Cache results
+        if self.config.cache_results:
+            self._save_to_cache(cache_key)
+        
+        logger.info(f"Detected {len(self.regimes)} distinct regimes")
+        return self.regimes
+    
+    def _preprocess_features(self, 
+                            start_date: pd.Timestamp,
+                            end_date: pd.Timestamp) -> None:
+        """
+        Extract and preprocess features for regime detection
+        
+        Args:
+            start_date (pd.Timestamp): Start date for feature extraction
+            end_date (pd.Timestamp): End date for feature extraction
+        """
+        logger.info("Extracting features from price data")
+        
+        # Get data slice allowing for lookback
+        lookback_start = start_date - pd.Timedelta(days=self.config.lookback_window)
+        data_slice = self.df.loc[lookback_start:end_date].copy()
+        
+        # Extract features
+        features = pd.DataFrame(index=data_slice.index)
+        
+        # 1. Return-based features
+        for period in self.config.return_periods:
+            # Returns
+            features[f'returns_{period}d'] = data_slice['Close'].pct_change(period)
+            
+            # Return volatility (standard deviation)
+            features[f'return_vol_{period}d'] = features[f'returns_{period}d'].rolling(period).std()
+            
+            # Return skewness
+            features[f'return_skew_{period}d'] = features[f'returns_{period}d'].rolling(period*2).skew()
+            
+            # Return kurtosis
+            features[f'return_kurt_{period}d'] = features[f'returns_{period}d'].rolling(period*2).kurt()
+        
+        # 2. Volatility features
+        for period in self.config.volatility_periods:
+            # Volatility (standard deviation)
+            returns = data_slice['Close'].pct_change()
+            features[f'volatility_{period}d'] = returns.rolling(period).std() * np.sqrt(252)
+            
+            # Volatility of volatility
+            features[f'vol_of_vol_{period}d'] = features[f'volatility_{period}d'].rolling(period).std()
+            
+            # Parkinson volatility estimator (uses High/Low)
+            high_low_ratio = np.log(data_slice['High'] / data_slice['Low'])
+            features[f'parkinsons_vol_{period}d'] = (high_low_ratio ** 2).rolling(period).mean() * 0.361 * np.sqrt(252)
+            
+            # True range and ATR
+            tr1 = data_slice['High'] - data_slice['Low']
+            tr2 = abs(data_slice['High'] - data_slice['Close'].shift())
+            tr3 = abs(data_slice['Low'] - data_slice['Close'].shift())
+            true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            features[f'atr_{period}d'] = true_range.rolling(period).mean() / data_slice['Close']
+        
+        # 3. Trend features
+        for period in self.config.trend_periods:
+            # Simple moving averages
+            sma = data_slice['Close'].rolling(period).mean()
+            features[f'close_sma_ratio_{period}d'] = data_slice['Close'] / sma - 1
+            
+            # Exponential moving averages
+            ema = data_slice['Close'].ewm(span=period, adjust=False).mean()
+            features[f'close_ema_ratio_{period}d'] = data_slice['Close'] / ema - 1
+            
+            # MA Slope
+            features[f'sma_slope_{period}d'] = sma.diff(5) / sma.shift(5)
+            
+            # Price distance from SMA in volatility units
+            price_dist = (data_slice['Close'] - sma) / (returns.rolling(period).std() * np.sqrt(period))
+            features[f'price_distance_{period}d'] = price_dist
+            
+            # RSI
+            delta = data_slice['Close'].diff()
+            gain = delta.clip(lower=0)
+            loss = -delta.clip(upper=0)
+            avg_gain = gain.rolling(period).mean()
+            avg_loss = loss.rolling(period).mean()
+            
+            # Handle division by zero
+            rs = avg_gain / avg_loss.replace(0, np.nan)
+            rs = rs.fillna(100)  # RSI of 100 where avg_loss is zero
+            
+            features[f'rsi_{period}d'] = 100 - (100 / (1 + rs))
+            
+            # ROC (Rate of Change)
+            features[f'roc_{period}d'] = data_slice['Close'].pct_change(period) * 100
+        
+        # 4. Volume features (if available)
+        if 'Volume' in data_slice.columns:
+            for period in self.config.volume_periods:
+                # Volume changes
+                features[f'volume_change_{period}d'] = data_slice['Volume'].pct_change(period)
+                
+                # Relative volume
+                vol_sma = data_slice['Volume'].rolling(period).mean()
+                features[f'relative_volume_{period}d'] = data_slice['Volume'] / vol_sma
+                
+                # Price-volume correlation
+                def compute_pv_corr(x):
+                    if len(x) < 3:  # Need at least 3 points for meaningful correlation
+                        return np.nan
+                    price_data = x['Close']
+                    volume_data = x['Volume']
+                    try:
+                        return pearsonr(price_data, volume_data)[0]
+                    except:
+                        return np.nan
+                
+                # Rolling price-volume correlation
+                pv_corr = data_slice[['Close', 'Volume']].rolling(period).apply(
+                    compute_pv_corr, raw=False
+                )
+                features[f'price_volume_corr_{period}d'] = pv_corr
+                
+                # On-balance volume momentum
+                obv = (data_slice['Close'].diff() > 0).astype(int) * data_slice['Volume']
+                obv = obv.cumsum()
+                features[f'obv_momentum_{period}d'] = obv.diff(period) / obv.shift(period)
+        
+        # 5. Autocorrelation features
+        for lag in self.config.autocorr_lags:
+            # Return autocorrelation
+            returns = data_slice['Close'].pct_change()
+            features[f'return_autocorr_{lag}d'] = returns.rolling(lag*3).apply(
+                lambda x: x.autocorr(lag=lag) if len(x) > lag else np.nan
+            )
+        
+        # Calculate derivative features
+        features['volatility_trend_20d'] = features['volatility_20d'].diff(5) / features['volatility_20d'].shift(5)
+        features['trend_strength'] = abs(features['sma_slope_50d']) / features['volatility_20d']
+        features['mean_reversion'] = features['return_autocorr_5d'] < -0.2
+        
+        # Remove NaN values
+        self.features = features.dropna(how='all')
+        
+        # Filter to analysis period
+        self.features = self.features.loc[start_date:end_date]
+        
+        logger.info(f"Extracted {self.features.shape[1]} features for regime analysis")
+        
+        # Feature preprocessing
+        self._preprocess_feature_matrix()
+    
+    def _preprocess_feature_matrix(self) -> None:
+        """Preprocess feature matrix for clustering"""
+        # Handle missing values
+        self.features = self.features.fillna(method='ffill').fillna(method='bfill').fillna(0)
+        
+        # Select robust feature scaling if configured
+        if self.config.use_robust_scaling:
+            self.scaler = RobustScaler()
+        else:
+            self.scaler = StandardScaler()
+            
+        # Scale features
+        scaled_features = self.scaler.fit_transform(self.features)
+        
+        # Apply PCA if configured
+        if self.config.use_pca:
+            n_components = min(self.config.pca_components, scaled_features.shape[1])
+            self.pca = PCA(n_components=n_components)
+            scaled_features = self.pca.fit_transform(scaled_features)
+            
+            # Store feature importances
+            if self.pca is not None:
+                feature_names = self.features.columns
+                for i, component in enumerate(self.pca.components_):
+                    for j, feature in enumerate(feature_names):
+                        importance = abs(component[j])
+                        if feature not in self.feature_importances:
+                            self.feature_importances[feature] = 0
+                        # Weight by explained variance
+                        self.feature_importances[feature] += importance * self.pca.explained_variance_ratio_[i]
+        
+            # Convert back to DataFrame
+            self.features_processed = pd.DataFrame(
+                scaled_features, 
+                index=self.features.index,
+                columns=[f'PC{i+1}' for i in range(scaled_features.shape[1])]
+            )
+        else:
+            # Just use scaled features
+            self.features_processed = pd.DataFrame(
+                scaled_features,
+                index=self.features.index,
+                columns=self.features.columns
+            )
+            
+            # Simple feature importance based on variance
+            for feature in self.features.columns:
+                self.feature_importances[feature] = self.features[feature].var()
+        
+        # Normalize feature importances
+        total_importance = sum(self.feature_importances.values())
+        for feature in self.feature_importances:
+            self.feature_importances[feature] /= total_importance
+    
+    def _perform_clustering(self) -> None:
+        """Perform clustering on preprocessed features"""
+        logger.info(f"Performing clustering using {self.config.cluster_method}")
+        
+        # Get feature matrix
+        X = self.features_processed.values
+        
+        # Select and apply clustering algorithm
+        if self.config.cluster_method == 'kmeans':
+            self.cluster_model = KMeans(
+                n_clusters=self.config.n_clusters,
+                random_state=42,
+                n_init=10
+            )
+            self.cluster_labels = pd.Series(
+                self.cluster_model.fit_predict(X),
+                index=self.features_processed.index
+            )
+            
+            # Get probabilities based on distance to centroids
+            distances = self._calculate_kmeans_probabilities(X)
+            self.cluster_probs = pd.DataFrame(
+                distances,
+                index=self.features_processed.index,
+                columns=[f'Cluster_{i}' for i in range(self.config.n_clusters)]
+            )
+            
+        elif self.config.cluster_method == 'gmm':
+            self.cluster_model = GaussianMixture(
+                n_components=self.config.n_clusters,
+                random_state=42,
+                n_init=10
+            )
+            self.cluster_model.fit(X)
+            self.cluster_labels = pd.Series(
+                self.cluster_model.predict(X),
+                index=self.features_processed.index
+            )
+            
+            # Get probabilities
+            probs = self.cluster_model.predict_proba(X)
+            self.cluster_probs = pd.DataFrame(
+                probs,
+                index=self.features_processed.index,
+                columns=[f'Cluster_{i}' for i in range(self.config.n_clusters)]
+            )
+            
+        elif self.config.cluster_method == 'dbscan':
+            self.cluster_model = DBSCAN(
+                eps=self.config.eps,
+                min_samples=self.config.min_samples
+            )
+            self.cluster_labels = pd.Series(
+                self.cluster_model.fit_predict(X),
+                index=self.features_processed.index
+            )
+            
+            # Create rough probability estimate for DBSCAN
+            self._calculate_dbscan_probabilities(X)
+            
+        elif self.config.cluster_method == 'hierarchical':
+            # Perform hierarchical clustering
+            Z = linkage(X, method='ward')
+            self.cluster_labels = pd.Series(
+                fcluster(Z, t=self.config.n_clusters, criterion='maxclust') - 1,  # Zero-based indexing
+                index=self.features_processed.index
+            )
+            
+            # Calculate approximate probabilities based on distance
+            self._calculate_hierarchical_probabilities(X, Z)
+            
+        # Calculate cluster quality metrics
+        self._calculate_cluster_quality(X)
+        
+        logger.info(f"Identified {self.cluster_labels.nunique()} distinct clusters")
+    
+    def _calculate_kmeans_probabilities(self, X: np.ndarray) -> np.ndarray:
+        """
+        Calculate probability-like scores for KMeans clusters
+        
+        Args:
+            X (np.ndarray): Feature matrix
+            
+        Returns:
+            np.ndarray: Pseudo-probability matrix
+        """
+        # Calculate distance to each centroid
+        distances = np.zeros((X.shape[0], self.config.n_clusters))
+        for i in range(self.config.n_clusters):
+            centroid = self.cluster_model.cluster_centers_[i]
+            distances[:, i] = np.linalg.norm(X - centroid, axis=1)
+        
+        # Convert distances to similarity scores
+        similarities = 1 / (1 + distances)
+        
+        # Normalize to sum to 1 (like probabilities)
+        probabilities = similarities / similarities.sum(axis=1, keepdims=True)
+        return probabilities
+    
+    def _calculate_dbscan_probabilities(self, X: np.ndarray) -> None:
+        """
+        Calculate probability-like scores for DBSCAN clusters
+        
+        Args:
+            X (np.ndarray): Feature matrix
+        """
+        # Count unique clusters
+        unique_clusters = np.unique(self.cluster_labels)
+        # Remove noise points from calculation (-1)
+        valid_clusters = unique_clusters[unique_clusters >= 0]
+        n_clusters = len(valid_clusters)
+        
+        # Initialize probability matrix
+        probs = np.zeros((X.shape[0], n_clusters))
+        
+        # Calculate cluster centers
+        cluster_centers = np.zeros((n_clusters, X.shape[1]))
+        for i, cluster_id in enumerate(valid_clusters):
+            mask = self.cluster_labels == cluster_id
+            cluster_centers[i] = X[mask].mean(axis=0)
+        
+        # Calculate distances and convert to probabilities
+        for i in range(X.shape[0]):
+            point = X[i]
+            distances = np.array([np.linalg.norm(point - center) for center in cluster_centers])
+            if self.cluster_labels.iloc[i] == -1:  # Noise point
+                probs[i] = 0  # No strong association with any cluster
+            else:
+                # Calculate similarity scores
+                similarities = 1 / (1 + distances)
+                # Normalize
+                probs[i] = similarities / similarities.sum()
+        
+        # Convert to DataFrame
+        self.cluster_probs = pd.DataFrame(
+            probs,
+            index=self.features_processed.index,
+            columns=[f'Cluster_{i}' for i in valid_clusters]
+        )
+    
+    def _calculate_hierarchical_probabilities(self, X: np.ndarray, Z: np.ndarray) -> None:
+        """
+        Calculate probability-like scores for hierarchical clusters
+        
+        Args:
+            X (np.ndarray): Feature matrix
+            Z (np.ndarray): Linkage matrix
+        """
+        # Count unique clusters
+        unique_clusters = np.unique(self.cluster_labels)
+        n_clusters = len(unique_clusters)
+        
+        # Initialize probability matrix
+        probs = np.zeros((X.shape[0], n_clusters))
+        
+        # Calculate cluster centers
+        cluster_centers = np.zeros((n_clusters, X.shape[1]))
+        for i, cluster_id in enumerate(unique_clusters):
+            mask = self.cluster_labels == cluster_id
+            cluster_centers[i] = X[mask].mean(axis=0)
+        
+        # Calculate distances and convert to probabilities
+        for i in range(X.shape[0]):
+            point = X[i]
+            distances = np.array([np.linalg.norm(point - center) for center in cluster_centers])
+            # Calculate similarity scores
+            similarities = 1 / (1 + distances)
+            # Normalize
+            probs[i] = similarities / similarities.sum()
+        
+        # Convert to DataFrame
+        self.cluster_probs = pd.DataFrame(
+            probs,
+            index=self.features_processed.index,
+            columns=[f'Cluster_{i}' for i in unique_clusters]
+        )
+    
+    def _calculate_cluster_quality(self, X: np.ndarray) -> None:
+        """
+        Calculate cluster quality metrics
+        
+        Args:
+            X (np.ndarray): Feature matrix
+        """
+        try:
+            # Silhouette score (only for more than one cluster)
+            if len(np.unique(self.cluster_labels)) > 1 and -1 not in self.cluster_labels.values:
+                self.silhouette_avg = silhouette_score(X, self.cluster_labels)
+                logger.info(f"Silhouette Score: {self.silhouette_avg:.4f}")
+            else:
+                self.silhouette_avg = None
+                
+            # Calinski-Harabasz Index (if more than one cluster and no noise points)
+            if len(np.unique(self.cluster_labels)) > 1 and -1 not in self.cluster_labels.values:
+                self.ch_score = calinski_harabasz_score(X, self.cluster_labels)
+                logger.info(f"Calinski-Harabasz Score: {self.ch_score:.4f}")
+            else:
+                self.ch_score = None
+                
+        except Exception as e:
+            logger.warning(f"Error calculating cluster quality: {str(e)}")
+            self.silhouette_avg = None
+            self.ch_score = None
+    
+    def _map_clusters_to_regimes(self) -> None:
+        """Map identified clusters to market regimes"""
+        logger.info("Mapping clusters to market regimes")
+        
+        # Get OHLCV data corresponding to analysis period
+        df_subset = self.df.loc[self.cluster_labels.index]
+        
+        # Calculate basic price statistics for each cluster
+        cluster_stats = {}
+        for cluster_id in sorted(self.cluster_labels.unique()):
+            if cluster_id == -1:  # Skip noise points in DBSCAN
+                continue
+                
+            # Get rows belonging to this cluster
+            mask = self.cluster_labels == cluster_id
+            cluster_df = df_subset[mask]
+            
+            if len(cluster_df) == 0:
+                continue
+                
+            # Calculate statistics
+            returns = cluster_df['Close'].pct_change().dropna()
+            
+            stats = {
+                'count': len(cluster_df),
+                'avg_return': returns.mean(),
+                'return_std': returns.std(),
+                'return_skew': returns.skew() if len(returns) > 2 else 0,
+                'sharpe': returns.mean() / returns.std() if returns.std() > 0 else 0,
+                'volatility': returns.std() * np.sqrt(252),
+                'max_drawdown': self._calculate_max_drawdown(cluster_df['Close']),
+                'win_rate': (returns > 0).mean(),
+                'avg_volume': cluster_df['Volume'].mean() if 'Volume' in cluster_df else None,
+                'volume_trend': (
+                    cluster_df['Volume'].iloc[-1] / cluster_df['Volume'].iloc[0] - 1
+                    if 'Volume' in cluster_df and len(cluster_df) > 1 else None
+                ),
+                'price_trend': cluster_df['Close'].iloc[-1] / cluster_df['Close'].iloc[0] - 1,
+                'trend_strength': abs(stats.pearsonr(
+                    np.arange(len(cluster_df)), 
+                    cluster_df['Close'].values
+                )[0]) if len(cluster_df) > 2 else 0,
+                'mean_features': self.features.loc[mask].mean()
+            }
+            
+            cluster_stats[cluster_id] = stats
+        
+        # Map clusters to regime types
+        self._determine_regime_characteristics(cluster_stats)
+        
+        # Identify regime change points
+        self._identify_regime_change_points()
+        
+    def _determine_regime_characteristics(self, cluster_stats: Dict[int, Dict[str, Any]]) -> None:
+        """
+        Determine regime characteristics for each cluster
+        
+        Args:
+            cluster_stats (Dict[int, Dict[str, Any]]): Statistics for each cluster
+        """
+        # Determine volatility levels
+        volatilities = [stats['volatility'] for stats in cluster_stats.values()]
+        vol_threshold_high = np.percentile(volatilities, 70)
+        vol_threshold_low = np.percentile(volatilities, 30)
+        
+        # Determine trend levels
+        trend_strengths = [stats['trend_strength'] for stats in cluster_stats.values()]
+        trend_threshold = np.percentile(trend_strengths, 60)
+        
+        # Determine volume characteristics
+        if all('avg_volume' in stats and stats['avg_volume'] is not None for stats in cluster_stats.values()):
+            volumes = [stats['avg_volume'] for stats in cluster_stats.values()]
+            volume_threshold_high = np.percentile(volumes, 70)
+            volume_threshold_low = np.percentile(volumes, 30)
+        else:
+            # Default thresholds if volume is not available
+            volume_threshold_high = float('inf')
+            volume_threshold_low = 0
+        
+        # Create regime mapping
+        regime_mapping = {}
+        for cluster_id, stats in cluster_stats.items():
+            # Determine volatility characteristic
+            if stats['volatility'] >= vol_threshold_high:
+                volatility = 'high'
+            elif stats['volatility'] <= vol_threshold_low:
+                volatility = 'low'
+            else:
+                volatility = 'medium'
+                
+            # Determine trend characteristic
+            if stats['trend_strength'] >= trend_threshold:
+                if stats['price_trend'] > 0:
+                    trend = 'bullish'
+                else:
+                    trend = 'bearish'
+            else:
+                trend = 'neutral'
+                
+            # Determine volume characteristic
+            if 'avg_volume' in stats and stats['avg_volume'] is not None:
+                if stats['avg_volume'] >= volume_threshold_high:
+                    volume = 'high'
+                elif stats['avg_volume'] <= volume_threshold_low:
+                    volume = 'low'
+                else:
+                    volume = 'normal'
+            else:
+                volume = 'unknown'
+                
+            # Determine overall regime type
+            if volatility == 'high':
+                if trend == 'bullish':
+                    regime_type = 'bullish_volatile'
+                elif trend == 'bearish':
+                    regime_type = 'bearish_volatile'
+                else:
+                    regime_type = 'high_volatility'
+            elif volatility == 'low':
+                if trend == 'neutral':
+                    regime_type = 'low_volatility_range'
+                elif trend == 'bullish':
+                    regime_type = 'bullish_quiet'
+                else:
+                    regime_type = 'bearish_quiet'
+            else:  # medium volatility
+                if trend == 'bullish':
+                    regime_type = 'bullish_trending'
+                elif trend == 'bearish':
+                    regime_type = 'bearish_trending'
+                else:
+                    regime_type = 'transitional'
+            
+            # Additional specific regime detection based on other metrics
+            if stats['return_skew'] < -1.0 and stats['max_drawdown'] > 0.1:
+                regime_type = 'crash'
+            elif stats['return_skew'] > 1.0 and stats['price_trend'] > 0.1:
+                regime_type = 'recovery'
+                
+            # Store regime mapping
+            regime_mapping[cluster_id] = {
+                'regime_type': regime_type,
+                'volatility': volatility,
+                'trend': trend,
+                'volume': volume
+            }
+        
+        # Store mapping
+        self.regime_mapping = regime_mapping
+        
+        # Apply mapping to create a regime series
+        self.regime_series = pd.Series(index=self.cluster_labels.index, dtype=str)
+        for idx, cluster_id in self.cluster_labels.items():
+            if cluster_id in regime_mapping:
+                self.regime_series.loc[idx] = regime_mapping[cluster_id]['regime_type']
+            else:
+                # Handle DBSCAN noise points
+                self.regime_series.loc[idx] = 'undefined'
+    
+    def _identify_regime_change_points(self, min_duration: int = 5) -> None:
+        """
+        Identify points where regimes change
+        
+        Args:
+            min_duration (int): Minimum number of days for a regime
+        """
+        # Create list to store regime objects
+        regimes = []
+        
+        # Find points where the regime changes
+        regime_changes = self.regime_series.ne(self.regime_series.shift()).astype(int)
+        change_points = self.regime_series.index[regime_changes == 1].tolist()
+        
+        # Add the start and end of the series
+        all_points = [self.regime_series.index[0]] + change_points + [self.regime_series.index[-1]]
+        
+        # Create regime objects for each segment
+        for i in range(len(all_points) - 1):
+            start_date = all_points[i]
+            end_date = all_points[i+1]
+            
+            # Skip very short regimes unless they're at the beginning or end
+            duration = (end_date - start_date).days
+            if duration < min_duration and i > 0 and i < len(all_points) - 2:
+                continue
+                
+            # Get regime type
+            regime_type = self.regime_series.loc[start_date]
+            
+            # Skip undefined regimes
+            if regime_type == 'undefined':
+                continue
+                
+            # Get cluster ID
+            cluster_id = self.cluster_labels.loc[start_date]
+            
+            # Get regime characteristics
+            regime_chars = self.regime_mapping.get(cluster_id, {})
+            volatility = regime_chars.get('volatility', 'medium')
+            trend = regime_chars.get('trend', 'neutral')
+            volume = regime_chars.get('volume', 'normal')
+            
+            # Calculate confidence based on cluster probabilities
+            if cluster_id in self.cluster_probs.columns:
+                confidence = self.cluster_probs.loc[start_date:end_date, cluster_id].mean()
+            else:
+                confidence = 0.7  # Default confidence
+            
+            # Get feature vector (mean for the regime period)
+            feature_vector = self.features_processed.loc[start_date:end_date].mean().values
+            
+            # Create regime object
+            regime = ClusteringMarketRegime(
+                regime_type=regime_type,
+                volatility=volatility,
+                trend=trend,
+                volume=volume,
+                start_date=start_date,
+                end_date=end_date,
+                confidence=confidence,
+                cluster_id=cluster_id,
+                feature_vector=feature_vector
+            )
+            
+            regimes.append(regime)
+        
+        # Store regimes
+        self.regimes = regimes
+        
+    def _analyze_regime_transitions(self) -> None:
+        """Analyze regime transitions and create transition matrix"""
+        # Skip if we have too few regimes
+        if len(self.regimes) < 2:
+            self.transition_matrix = pd.DataFrame()
+            return
+            
+        # Count transitions
+        transitions = {}
+        regime_types = set()
+        
+        # Collect all regime types
+        for regime in self.regimes:
+            regime_types.add(regime.regime_type)
+            
+        # Initialize transition counts
+        for from_regime in regime_types:
+            transitions[from_regime] = {to_regime: 0 for to_regime in regime_types}
+            
+        # Count transitions
+        for i in range(len(self.regimes) - 1):
+            from_regime = self.regimes[i].regime_type
+            to_regime = self.regimes[i+1].regime_type
+            transitions[from_regime][to_regime] += 1
+            
+        # Convert to probabilities
+        probs = {}
+        for from_regime, to_regimes in transitions.items():
+            total = sum(to_regimes.values())
+            if total > 0:
+                probs[from_regime] = {r: count / total for r, count in to_regimes.items()}
+            else:
+                probs[from_regime] = {r: 0 for r in to_regimes}
+                
+        # Create DataFrame
+        self.transition_matrix = pd.DataFrame(probs)
+        
+        # Store transition probabilities in regime objects
+        for regime in self.regimes:
+            if regime.regime_type in self.transition_matrix.index:
+                regime.transition_probs = self.transition_matrix.loc[regime.regime_type].to_dict()
+            
+    def _calculate_regime_probabilities(self) -> None:
+        """Calculate regime probabilities and stability metrics"""
+        # Skip if we have no regimes
+        if not self.regimes:
+            return
+            
+        # Process each regime
+        for i, regime in enumerate(self.regimes):
+            # Set probability for current cluster
+            if regime.cluster_id in self.cluster_mapping:
+                regime.probability = {
+                    # Average probability for this cluster during the regime period
+                    str(cluster_id): self.cluster_probs.loc[
+                        regime.start_date:regime.end_date, 
+                        f'Cluster_{cluster_id}'
+                    ].mean()
+                    for cluster_id in self.cluster_mapping
+                }
+            
+            # Calculate stability score
+            stability_components = []
+            
+            # 1. Duration stability (longer regimes are more stable)
+            duration_days = (regime.end_date - regime.start_date).days
+            norm_duration = min(1.0, duration_days / 30)  # Normalize with 30 days as reference
+            stability_components.append(norm_duration)
+            
+            # 2. Probability stability (higher probability = more stable)
+            prob_stability = regime.confidence
+            stability_components.append(prob_stability)
+            
+            # 3. Transition stability (lower probability of transitioning = more stable)
+            if regime.transition_probs:
+                # Probability of staying in same regime
+                stay_prob = regime.transition_probs.get(regime.regime_type, 0)
+                stability_components.append(stay_prob)
+            
+            # 4. Cluster cohesion (if available)
+            if hasattr(self, 'silhouette_avg') and self.silhouette_avg is not None:
+                # Use overall silhouette score as a component
+                stability_components.append(max(0, self.silhouette_avg))
+            
+            # Calculate overall stability
+            regime.stability_score = np.mean(stability_components)
+            
+            # Calculate expected duration based on transition matrix
+            if regime.regime_type in self.transition_matrix.index:
+                stay_prob = self.transition_matrix.loc[regime.regime_type, regime.regime_type]
+                if stay_prob > 0:
+                    # Expected duration = 1 / (1 - p) where p is probability of staying
+                    regime.expected_duration = round(1 / (1 - stay_prob))
+                else:
+                    regime.expected_duration = 1
+            else:
+                regime.expected_duration = 1
+            
+            # Calculate feature importance for this regime
+            if self.feature_importances:
+                regime.feature_importance = self._calculate_regime_feature_importance(regime)
+    
+    def _calculate_regime_feature_importance(self, regime: ClusteringMarketRegime) -> Dict[str, float]:
+        """
+        Calculate feature importance for specific regime
+        
+        Args:
+            regime (ClusteringMarketRegime): Regime to analyze
+            
+        Returns:
+            Dict[str, float]: Feature importance scores
+        """
+        # Get period data
+        period_features = self.features.loc[regime.start_date:regime.end_date].copy()
+        
+        # Calculate correlation with cluster probability
+        if regime.cluster_id in self.cluster_probs.columns:
+            cluster_probs = self.cluster_probs.loc[
+                regime.start_date:regime.end_date, 
+                f'Cluster_{regime.cluster_id}'
+            ]
+            
+            importance = {}
+            for feature in period_features.columns:
+                try:
+                    corr = abs(pearsonr(period_features[feature], cluster_probs)[0])
+                    importance[feature] = max(0, corr)  # Only keep positive correlations
+                except:
+                    importance[feature] = 0
+                    
+            # Normalize
+            total = sum(importance.values())
+            if total > 0:
+                return {f: score / total for f, score in importance.items()}
+            else:
+                # Fallback to global feature importance
+                return self.feature_importances
+        else:
+            return self.feature_importances
+    
+    def _calculate_max_drawdown(self, prices: pd.Series) -> float:
+        """
+        Calculate maximum drawdown for a price series
+        
+        Args:
+            prices (pd.Series): Price series
+            
+        Returns:
+            float: Maximum drawdown as a percentage
+        """
+        # Calculate the running maximum
+        running_max = prices.cummax()
+        # Calculate the drawdown
+        drawdown = (prices - running_max) / running_max
+        # Return the minimum (maximum drawdown)
+        return abs(drawdown.min())
+    
+    def _make_cache_key(self, start_date: pd.Timestamp, end_date: pd.Timestamp) -> str:
+        """
+        Create cache key for date range
+        
+        Args:
+            start_date (pd.Timestamp): Start date
+            end_date (pd.Timestamp): End date
+            
+        Returns:
+            str: Cache key
+        """
+        return f"{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}_{self.config.cluster_method}"
+    
+    def _save_to_cache(self, cache_key: str) -> None:
+        """
+        Save results to cache
+        
+        Args:
+            cache_key (str): Cache key
+        """
+        if not self.config.cache_results:
+            return
+            
+        # Prepare data for serialization
+        cache_data = {
+            'regimes': [regime.to_dict() for regime in self.regimes],
+            'cluster_labels': self.cluster_labels.to_dict(),
+            'regime_mapping': self.regime_mapping,
+            'transition_matrix': self.transition_matrix.to_dict() if not self.transition_matrix.empty else {},
+            'feature_importances': self.feature_importances,
+            'silhouette_avg': self.silhouette_avg
+        }
+        
+        # Save to file
+        cache_file = os.path.join(self.cache_dir, f"{cache_key}.pickle")
+        with open(cache_file, 'wb') as f:
+            pickle.dump(cache_data, f)
+    
+    def _load_from_cache(self, cache_key: str) -> bool:
+        """
+        Load results from cache
+        
+        Args:
+            cache_key (str): Cache key
+            
+        Returns:
+            bool: True if cache was loaded successfully
+        """
+        if not self.config.cache_results:
+            return False
+            
+        cache_file = os.path.join(self.cache_dir, f"{cache_key}.pickle")
+        
+        if not os.path.exists(cache_file):
+            return False
+            
+        try:
+            with open(cache_file, 'rb') as f:
+                cache_data = pickle.load(f)
+                
+            # Restore data
+            self.regimes = [ClusteringMarketRegime.from_dict(r) for r in cache_data['regimes']]
+            self.cluster_labels = pd.Series(cache_data['cluster_labels'])
+            self.regime_mapping = cache_data['regime_mapping']
+            
+            if cache_data['transition_matrix']:
+                self.transition_matrix = pd.DataFrame(cache_data['transition_matrix'])
+            else:
+                self.transition_matrix = pd.DataFrame()
+                
+            self.feature_importances = cache_data['feature_importances']
+            self.silhouette_avg = cache_data['silhouette_avg']
+            
+            return True
+        except Exception as e:
+            logger.warning(f"Error loading cache: {str(e)}")
+            return False
+            
+    def visualize_regimes(self, 
+                        price_data: bool = True,
+                        volume_data: bool = True,
+                        figure_size: Tuple[int, int] = (15, 10)) -> plt.Figure:
+        """
+        Visualize detected regimes
+        
+        Args:
+            price_data (bool): Include price data
+            volume_data (bool): Include volume data
+            figure_size (Tuple[int, int]): Figure size
+            
+        Returns:
+            plt.Figure: Matplotlib figure
+        """
+        if not self.regimes:
+            logger.warning("No regimes to visualize")
+            return None
+            
+        # Create figure
+        fig, axes = plt.subplots(
+            2 if volume_data and 'Volume' in self.df.columns else 1, 
+            1, 
+            figsize=figure_size,
+            gridspec_kw={'height_ratios': [3, 1]} if volume_data and 'Volume' in self.df.columns else None,
+            sharex=True
+        )
+        
+        # Get price axis
+        ax_price = axes[0] if volume_data and 'Volume' in self.df.columns else axes
+        
+        # Plot price data if requested
+        if price_data:
+            # Plot price
+            ax_price.plot(self.df.index, self.df['Close'], color='black', alpha=0.7, linewidth=1)
+            ax_price.set_ylabel('Price')
+            ax_price.set_title('Market Regimes Analysis')
+            
+        # Get date range
+        start_date = min(r.start_date for r in self.regimes)
+        end_date = max(r.end_date for r in self.regimes)
+        
+        # Define colors for regime types
+        regime_colors = {
+            'bullish_trending': 'green',
+            'bearish_trending': 'red',
+            'bullish_volatile': 'lime',
+            'bearish_volatile': 'darkred',
+            'high_volatility': 'orange',
+            'low_volatility_range': 'blue',
+            'bullish_quiet': 'skyblue',
+            'bearish_quiet': 'lightcoral',
+            'transitional': 'purple',
+            'crash': 'black',
+            'recovery': 'yellow',
+            'undefined': 'gray'
+        }
+        
+        # Add regime background colors
+        for regime in self.regimes:
+            # Get color for this regime
+            color = regime_colors.get(regime.regime_type, 'gray')
+            
+            # Add background color
+            ax_price.axvspan(
+                regime.start_date, 
+                regime.end_date, 
+                alpha=0.2, 
+                color=color, 
+                label=f"{regime.regime_type} ({regime.start_date.strftime('%Y-%m-%d')} to {regime.end_date.strftime('%Y-%m-%d')})"
+            )
+            
+            # Add text label
+            mid_point = regime.start_date + (regime.end_date - regime.start_date) / 2
+            if mid_point >= start_date and mid_point <= end_date:
+                y_pos = ax_price.get_ylim()[1] * 0.95
+                ax_price.text(
+                    mid_point, 
+                    y_pos, 
+                    regime.regime_type,
+                    horizontalalignment='center',
+                    fontsize=8,
+                    bbox=dict(facecolor='white', alpha=0.7, boxstyle='round,pad=0.3')
+                )
+        
+        # Plot volume if requested
+        if volume_data and 'Volume' in self.df.columns:
+            ax_volume = axes[1]
+            ax_volume.bar(
+                self.df.index, 
+                self.df['Volume'], 
+                color='gray', 
+                alpha=0.5,
+                width=2
+            )
+            ax_volume.set_ylabel('Volume')
+        
+        # Format x-axis
+        if volume_data and 'Volume' in self.df.columns:
+            axes[1].set_xlabel('Date')
+        else:
+            ax_price.set_xlabel('Date')
+        
+        # Adjust layout and return
+        plt.tight_layout()
+        return fig
+    
+    def visualize_feature_importance(self, 
+                                   top_n: int = 10, 
+                                   figure_size: Tuple[int, int] = (12, 8)) -> plt.Figure:
+        """
+        Visualize feature importance
+        
+        Args:
+            top_n (int): Number of top features to show
+            figure_size (Tuple[int, int]): Figure size
+            
+        Returns:
+            plt.Figure: Matplotlib figure
+        """
+        # Get top features
+        top_features = sorted(
+            self.feature_importances.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )[:top_n]
+        
+        return dict(top_features)
+    
+    def _get_common_transitions(self, 
+                             regimes: List[ClusteringMarketRegime]) -> Dict[str, float]:
+        """
+        Get common regime transitions for a set of regimes
+        
+        Args:
+            regimes (List[ClusteringMarketRegime]): Regimes to analyze
+            
+        Returns:
+            Dict[str, float]: Common next regimes with probabilities
+        """
+        # Combine transition probabilities
+        combined = {}
+        for regime in regimes:
+            if regime.transition_probs:
+                for next_regime, prob in regime.transition_probs.items():
+                    if next_regime not in combined:
+                        combined[next_regime] = []
+                    combined[next_regime].append(prob)
+        
+        # Calculate mean probabilities
+        mean_probs = {
+            regime: np.mean(probs) for regime, probs in combined.items()
+        }
+        
+        # Sort by probability
+        return dict(sorted(mean_probs.items(), key=lambda x: x[1], reverse=True))
+    
+    def compare_regimes(self, 
+                       current_period: Tuple[pd.Timestamp, pd.Timestamp],
+                       historical_period: Tuple[pd.Timestamp, pd.Timestamp]) -> Dict[str, Any]:
+        """
+        Compare regimes between two time periods
+        
+        Args:
+            current_period (Tuple[pd.Timestamp, pd.Timestamp]): Current period to analyze
+            historical_period (Tuple[pd.Timestamp, pd.Timestamp]): Historical period to compare
+            
+        Returns:
+            Dict[str, Any]: Comparison results
+        """
+        # Detect regimes for both periods
+        current_regimes = self.detect_regimes(
+            start_date=current_period[0],
+            end_date=current_period[1]
+        )
+        
+        # Store current regimes
+        current_regime_info = {
+            'regimes': current_regimes,
+            'distribution': self._get_regime_distribution(current_regimes)
+        }
+        
+        # Temporarily store current regimes
+        temp_current_regimes = current_regimes.copy()
+        
+        # Detect historical regimes
+        historical_regimes = self.detect_regimes(
+            start_date=historical_period[0],
+            end_date=historical_period[1]
+        )
+        
+        # Store historical regimes
+        historical_regime_info = {
+            'regimes': historical_regimes,
+            'distribution': self._get_regime_distribution(historical_regimes)
+        }
+        
+        # Restore current regimes
+        self.regimes = temp_current_regimes
+        
+        # Compare distributions
+        comparison = {
+            'current_period': {
+                'start': current_period[0],
+                'end': current_period[1],
+                'regime_distribution': current_regime_info['distribution']
+            },
+            'historical_period': {
+                'start': historical_period[0],
+                'end': historical_period[1],
+                'regime_distribution': historical_regime_info['distribution']
+            },
+            'similarity': self._calculate_distribution_similarity(
+                current_regime_info['distribution'],
+                historical_regime_info['distribution']
+            ),
+            'regime_transitions': {
+                'current': self.transition_matrix.to_dict() if not self.transition_matrix.empty else {},
+                'historical': None  # Will be set later
+            }
+        }
+        
+        # Compare specific metrics if possible
+        if current_regimes and historical_regimes:
+            # Store transition matrix
+            temp_transition = self.transition_matrix.copy()
+            
+            # Calculate historical transition matrix
+            self._analyze_regime_transitions()
+            comparison['regime_transitions']['historical'] = self.transition_matrix.to_dict() if not self.transition_matrix.empty else {}
+            
+            # Restore current transition matrix
+            self.transition_matrix = temp_transition
+            
+            # Compare volatility
+            current_vol = np.mean([r.volatility == 'high' for r in current_regimes])
+            historical_vol = np.mean([r.volatility == 'high' for r in historical_regimes])
+            comparison['volatility_change'] = current_vol - historical_vol
+            
+            # Compare trend
+            current_bullish = np.mean([r.trend == 'bullish' for r in current_regimes])
+            historical_bullish = np.mean([r.trend == 'bullish' for r in historical_regimes])
+            comparison['trend_change'] = current_bullish - historical_bullish
+            
+            # Compare stability
+            current_stability = np.mean([r.stability_score for r in current_regimes])
+            historical_stability = np.mean([r.stability_score for r in historical_regimes])
+            comparison['stability_change'] = current_stability - historical_stability
+        
+        return comparison
+    
+    def _get_regime_distribution(self, regimes: List[ClusteringMarketRegime]) -> Dict[str, float]:
+        """
+        Calculate regime type distribution
+        
+        Args:
+            regimes (List[ClusteringMarketRegime]): Regimes to analyze
+            
+        Returns:
+            Dict[str, float]: Distribution of regime types
+        """
+        if not regimes:
+            return {}
+            
+        # Count duration of each regime type
+        type_durations = {}
+        for regime in regimes:
+            duration = (regime.end_date - regime.start_date).days
+            if regime.regime_type not in type_durations:
+                type_durations[regime.regime_type] = 0
+            type_durations[regime.regime_type] += duration
+        
+        # Calculate total duration
+        total_duration = sum(type_durations.values())
+        
+        # Calculate percentages
+        return {
+            regime_type: duration / total_duration
+            for regime_type, duration in type_durations.items()
+        }
+    
+    def _calculate_distribution_similarity(self, 
+                                        dist1: Dict[str, float], 
+                                        dist2: Dict[str, float]) -> float:
+        """
+        Calculate similarity between two regime distributions
+        
+        Args:
+            dist1 (Dict[str, float]): First distribution
+            dist2 (Dict[str, float]): Second distribution
+            
+        Returns:
+            float: Similarity score (0 to 1)
+        """
+        # Get all regime types
+        all_types = set(dist1.keys()) | set(dist2.keys())
+        
+        # Calculate cosine similarity
+        vec1 = np.array([dist1.get(t, 0) for t in all_types])
+        vec2 = np.array([dist2.get(t, 0) for t in all_types])
+        
+        # Avoid division by zero
+        norm1 = np.linalg.norm(vec1)
+        norm2 = np.linalg.norm(vec2)
+        
+        if norm1 == 0 or norm2 == 0:
+            return 0
+        
+        return np.dot(vec1, vec2) / (norm1 * norm2)
+    
+    def detect_regime_shifts(self,
+                          lookback_days: int = 30,
+                          probability_threshold: float = 0.7) -> List[Dict[str, Any]]:
+        """
+        Detect potential upcoming regime shifts
+        
+        Args:
+            lookback_days (int): Days to look back for analysis
+            probability_threshold (float): Threshold for shift detection
+            
+        Returns:
+            List[Dict[str, Any]]: Potential regime shifts
+        """
+        if not self.regimes:
+            logger.warning("No regimes available for shift detection")
+            return []
+            
+        # Get current regime
+        current_regime = self.regimes[-1]
+        
+        # Check if we have an active transition matrix
+        if self.transition_matrix.empty or current_regime.regime_type not in self.transition_matrix.index:
+            logger.warning("Insufficient transition data for shift detection")
+            return []
+        
+        # Get possible transitions
+        transitions = self.transition_matrix.loc[current_regime.regime_type]
+        
+        # Filter by probability threshold
+        likely_transitions = [
+            regime for regime, prob in transitions.items()
+            if prob >= probability_threshold and regime != current_regime.regime_type
+        ]
+        
+        # Prepare results
+        shifts = []
+        for next_regime in likely_transitions:
+            # Find regime type in mapping
+            regime_info = None
+            for r in self.regimes:
+                if r.regime_type == next_regime:
+                    regime_info = r
+                    break
+            
+            if not regime_info:
+                continue
+                
+            shifts.append({
+                'from_regime': current_regime.regime_type,
+                'to_regime': next_regime,
+                'probability': transitions[next_regime],
+                'estimated_timeframe': current_regime.expected_duration,
+                'volatility_change': self._compare_regime_characteristic(
+                    current_regime, regime_info, 'volatility'
+                ),
+                'trend_change': self._compare_regime_characteristic(
+                    current_regime, regime_info, 'trend'
+                ),
+                'key_indicators': self._identify_shift_indicators(
+                    current_regime, regime_info
+                )
+            })
+        
+        return shifts
+    
+    def _compare_regime_characteristic(self,
+                                     regime1: ClusteringMarketRegime,
+                                     regime2: ClusteringMarketRegime,
+                                     characteristic: str) -> str:
+        """
+        Compare a specific characteristic between regimes
+        
+        Args:
+            regime1 (ClusteringMarketRegime): First regime
+            regime2 (ClusteringMarketRegime): Second regime
+            characteristic (str): Characteristic to compare
+            
+        Returns:
+            str: Description of change
+        """
+        # Get characteristic values
+        val1 = getattr(regime1, characteristic, None)
+        val2 = getattr(regime2, characteristic, None)
+        
+        if val1 is None or val2 is None:
+            return "unknown"
+            
+        if val1 == val2:
+            return "unchanged"
+            
+        # Specific comparisons
+        if characteristic == 'volatility':
+            volatility_ranks = {'low': 0, 'medium': 1, 'high': 2}
+            if volatility_ranks.get(val2, 1) > volatility_ranks.get(val1, 1):
+                return "increasing"
+            else:
+                return "decreasing"
+                
+        elif characteristic == 'trend':
+            trend_ranks = {'bearish': -1, 'neutral': 0, 'bullish': 1}
+            v1 = trend_ranks.get(val1, 0)
+            v2 = trend_ranks.get(val2, 0)
+            if v2 > v1:
+                return "more_bullish"
+            elif v2 < v1:
+                return "more_bearish"
+            else:
+                return "unchanged"
+                
+        # Default comparison
+        return f"{val1} to {val2}"
+    
+    def _identify_shift_indicators(self,
+                                current_regime: ClusteringMarketRegime,
+                                next_regime: ClusteringMarketRegime) -> List[str]:
+        """
+        Identify key indicators for regime shift
+        
+        Args:
+            current_regime (ClusteringMarketRegime): Current regime
+            next_regime (ClusteringMarketRegime): Potential next regime
+            
+        Returns:
+            List[str]: Key indicators to watch
+        """
+        indicators = []
+        
+        # Compare feature importance
+        if current_regime.feature_importance and next_regime.feature_importance:
+            # Find differentiating features
+            for feature, importance in next_regime.feature_importance.items():
+                if (feature in current_regime.feature_importance and 
+                    importance > current_regime.feature_importance[feature] * 1.5):
+                    indicators.append(feature)
+        
+        # Add basic indicators based on regime type
+        if next_regime.volatility == 'high' and current_regime.volatility != 'high':
+            indicators.append('volatility_20d')
+        
+        if next_regime.trend == 'bullish' and current_regime.trend != 'bullish':
+            indicators.append('close_sma_ratio_50d')
+            
+        if 'volume' in next_regime.regime_type.lower():
+            indicators.append('relative_volume_10d')
+        
+        return indicators[:5]  # Limit to top 5 indicators
+    
+    def cross_validate(self, 
+                     n_splits: int = 3, 
+                     min_train_size: int = 252) -> Dict[str, Any]:
+        """
+        Perform cross-validation of clustering performance
+        
+        Args:
+            n_splits (int): Number of validation splits
+            min_train_size (int): Minimum training size in days
+            
+        Returns:
+            Dict[str, Any]: Cross-validation results
+        """
+        if len(self.df) < min_train_size * 2:
+            logger.warning("Insufficient data for cross-validation")
+            return {}
+            
+        # Create splits
+        split_points = np.linspace(
+            min_train_size,
+            len(self.df) - 1,
+            n_splits + 1
+        ).astype(int)
+        
+        # Store results
+        results = {
+            'silhouette_scores': [],
+            'stability_scores': [],
+            'regime_consistency': []
+        }
+        
+        # Perform validation
+        for i in range(n_splits):
+            train_end = split_points[i]
+            test_end = split_points[i + 1]
+            
+            # Train on first segment
+            train_start_date = self.df.index[0]
+            train_end_date = self.df.index[train_end]
+            
+            train_regimes = self.detect_regimes(
+                start_date=train_start_date,
+                end_date=train_end_date,
+                force_recompute=True
+            )
+            
+            # Save clustering model and preprocessing
+            train_model = self.cluster_model
+            train_scaler = self.scaler
+            train_pca = self.pca
+            
+            # Calculate consistency in train set
+            train_stability = np.mean([r.stability_score for r in train_regimes]) if train_regimes else 0
+            results['stability_scores'].append(train_stability)
+            
+            # Validate on second segment
+            test_start_date = self.df.index[train_end + 1]
+            test_end_date = self.df.index[test_end]
+            
+            test_regimes = self.detect_regimes(
+                start_date=test_start_date,
+                end_date=test_end_date,
+                force_recompute=True
+            )
+            
+            # Save silhouette score if available
+            if hasattr(self, 'silhouette_avg') and self.silhouette_avg is not None:
+                results['silhouette_scores'].append(self.silhouette_avg)
+            
+            # Calculate regime consistency between train and test
+            consistency = self._calculate_regime_consistency(train_regimes, test_regimes)
+            results['regime_consistency'].append(consistency)
+            
+        # Calculate aggregate metrics
+        results['mean_silhouette'] = np.mean(results['silhouette_scores']) if results['silhouette_scores'] else None
+        results['mean_stability'] = np.mean(results['stability_scores'])
+        results['mean_consistency'] = np.mean(results['regime_consistency'])
+        
+        return results
+    
+    def _calculate_regime_consistency(self,
+                                    regimes1: List[ClusteringMarketRegime],
+                                    regimes2: List[ClusteringMarketRegime]) -> float:
+        """
+        Calculate consistency between two sets of regime detections
+        
+        Args:
+            regimes1 (List[ClusteringMarketRegime]): First set of regimes
+            regimes2 (List[ClusteringMarketRegime]): Second set of regimes
+            
+        Returns:
+            float: Consistency score (0 to 1)
+        """
+        if not regimes1 or not regimes2:
+            return 0.0
+            
+        # Calculate distribution similarity
+        dist1 = self._get_regime_distribution(regimes1)
+        dist2 = self._get_regime_distribution(regimes2)
+        
+        similarity = self._calculate_distribution_similarity(dist1, dist2)
+        
+        # Calculate transitions similarity if possible
+        transition_sim = 0.0
+        if len(regimes1) > 1 and len(regimes2) > 1:
+            # Calculate transition matrices
+            trans1 = self._calculate_transitions_manually(regimes1)
+            trans2 = self._calculate_transitions_manually(regimes2)
+            
+            # Get all regime types
+            all_types = set(trans1.keys()) | set(trans2.keys())
+            
+            # Compare transitions
+            similarities = []
+            for from_regime in all_types:
+                if from_regime in trans1 and from_regime in trans2:
+                    # Get all possible to_regimes
+                    to_regimes = set(trans1[from_regime].keys()) | set(trans2[from_regime].keys())
+                    
+                    # Create vectors
+                    vec1 = np.array([trans1[from_regime].get(to_regime, 0) for to_regime in to_regimes])
+                    vec2 = np.array([trans2[from_regime].get(to_regime, 0) for to_regime in to_regimes])
+                    
+                    # Calculate similarity
+                    norm1 = np.linalg.norm(vec1)
+                    norm2 = np.linalg.norm(vec2)
+                    
+                    if norm1 > 0 and norm2 > 0:
+                        sim = np.dot(vec1, vec2) / (norm1 * norm2)
+                        similarities.append(sim)
+            
+            if similarities:
+                transition_sim = np.mean(similarities)
+        
+        # Combine scores (more weight to distribution similarity)
+        return 0.7 * similarity + 0.3 * transition_sim
+    
+    def _calculate_transitions_manually(self, regimes: List[ClusteringMarketRegime]) -> Dict[str, Dict[str, float]]:
+        """
+        Calculate transition matrix manually from regimes
+        
+        Args:
+            regimes (List[ClusteringMarketRegime]): Regimes to analyze
+            
+        Returns:
+            Dict[str, Dict[str, float]]: Transition matrix
+        """
+        transitions = {}
+        
+        # Count transitions
+        for i in range(len(regimes) - 1):
+            from_regime = regimes[i].regime_type
+            to_regime = regimes[i+1].regime_type
+            
+            if from_regime not in transitions:
+                transitions[from_regime] = {}
+                
+            if to_regime not in transitions[from_regime]:
+                transitions[from_regime][to_regime] = 0
+                
+            transitions[from_regime][to_regime] += 1
+        
+        # Convert to probabilities
+        for from_regime in transitions:
+            total = sum(transitions[from_regime].values())
+            if total > 0:
+                for to_regime in transitions[from_regime]:
+                    transitions[from_regime][to_regime] /= total
+        
+        return transitions
+    
+    def fit_to_historical_regime(self, 
+                               target_period: Tuple[pd.Timestamp, pd.Timestamp],
+                               sensitivity: float = 0.7) -> Dict[str, Any]:
+        """
+        Find historical periods that match a target regime pattern
+        
+        Args:
+            target_period (Tuple[pd.Timestamp, pd.Timestamp]): Period to match
+            sensitivity (float): Matching sensitivity (0 to 1)
+            
+        Returns:
+            Dict[str, Any]: Matching periods with similarity scores
+        """
+        # Detect regimes for target period
+        target_regimes = self.detect_regimes(
+            start_date=target_period[0],
+            end_date=target_period[1]
+        )
+        
+        if not target_regimes:
+            logger.warning("No regimes detected in target period")
+            return {}
+        
+        # Calculate target distribution
+        target_distribution = self._get_regime_distribution(target_regimes)
+        
+        # Sliding window analysis
+        window_size = (target_period[1] - target_period[0]).days
+        
+        # Create results container
+        matches = []
+        
+        # Loop through historical periods
+        current_date = self.df.index[0]
+        last_possible_date = self.df.index[-1] - pd.Timedelta(days=window_size)
+        
+        while current_date <= last_possible_date:
+            # Define window
+            window_end = current_date + pd.Timedelta(days=window_size)
+            
+            # Skip if overlaps with target
+            if (current_date >= target_period[0] and current_date <= target_period[1]) or \
+               (window_end >= target_period[0] and window_end <= target_period[1]):
+                current_date += pd.Timedelta(days=window_size // 3)  # Move window by 1/3
+                continue
+            
+            # Detect regimes for this window
+            window_regimes = self.detect_regimes(
+                start_date=current_date,
+                end_date=window_end
+            )
+            
+            if not window_regimes:
+                current_date += pd.Timedelta(days=window_size // 3)
+                continue
+                
+            # Calculate distribution and similarity
+            window_distribution = self._get_regime_distribution(window_regimes)
+            similarity = self._calculate_distribution_similarity(
+                target_distribution, window_distribution
+            )
+            
+            # Check if similar enough
+            if similarity >= sensitivity:
+                matches.append({
+                    'start_date': current_date,
+                    'end_date': window_end,
+                    'similarity': similarity,
+                    'regimes': [r.regime_type for r in window_regimes]
+                })
+            
+            # Move window by 1/3 of its size
+            current_date += pd.Timedelta(days=window_size // 3)
+        
+        # Sort by similarity
+        matches.sort(key=lambda x: x['similarity'], reverse=True)
+        
+        return {
+            'target_period': {
+                'start': target_period[0],
+                'end': target_period[1],
+                'regime_distribution': target_distribution,
+                'regimes': [r.regime_type for r in target_regimes]
+            },
+            'matching_periods': matches
+        }
+    
+    def analyze_performance_by_regime(self, 
+                                     return_horizon: int = 5,
+                                     market_days: bool = True) -> pd.DataFrame:
+        """
+        Analyze performance characteristics of different regimes
+        
+        Args:
+            return_horizon (int): Days to look forward for returns
+            market_days (bool): If True, use market days, else calendar days
+            
+        Returns:
+            pd.DataFrame: Performance metrics by regime
+        """
+        if not self.regimes:
+            logger.warning("No regimes available for performance analysis")
+            return pd.DataFrame()
+            
+        # Set up results container
+        performance = []
+        
+        # Calculate returns for each regime
+        for regime in self.regimes:
+            # Get regime data
+            regime_data = self.df[regime.start_date:regime.end_date]
+            
+            if len(regime_data) < 2:
+                continue
+                
+            # Calculate metrics
+            returns = regime_data['Close'].pct_change().dropna()
+            
+            # Calculate forward returns for each day in regime
+            forward_returns = []
+            for date in regime_data.index[:-1]:  # Skip last day
+                try:
+                    if market_days:
+                        # Get return over next N market days
+                        idx = regime_data.index.get_loc(date)
+                        if idx + return_horizon < len(regime_data):
+                            end_idx = idx + return_horizon
+                        else:
+                            end_idx = len(regime_data) - 1
+                            
+                        end_date = regime_data.index[end_idx]
+                    else:
+                        # Get return over next N calendar days
+                        end_date = date + pd.Timedelta(days=return_horizon)
+                        if end_date > regime.end_date:
+                            end_date = regime.end_date
+                    
+                    start_price = regime_data.loc[date, 'Close']
+                    end_price = self.df.loc[end_date, 'Close']
+                    fwd_return = (end_price / start_price - 1) * 100  # percentage
+                    forward_returns.append(fwd_return)
+                except:
+                    continue
+            
+            # Calculate performance metrics
+            perf = {
+                'regime': regime.regime_type,
+                'start_date': regime.start_date,
+                'end_date': regime.end_date,
+                'duration_days': (regime.end_date - regime.start_date).days,
+                'volatility': regime.volatility,
+                'trend': regime.trend,
+                'volume': regime.volume,
+                'daily_return_mean': returns.mean() * 100,
+                'daily_return_std': returns.std() * 100,
+                'daily_sharpe': returns.mean() / returns.std() if returns.std() > 0 else 0,
+                'win_rate': (returns > 0).mean() * 100,
+                'total_return': (regime_data['Close'].iloc[-1] / regime_data['Close'].iloc[0] - 1) * 100
+            }
+            
+            # Add forward-looking metrics
+            if forward_returns:
+                perf.update({
+                    f'forward_{return_horizon}d_return_mean': np.mean(forward_returns),
+                    f'forward_{return_horizon}d_return_std': np.std(forward_returns),
+                    f'forward_{return_horizon}d_win_rate': (np.array(forward_returns) > 0).mean() * 100
+                })
+                
+            performance.append(perf)
+        
+        # Convert to DataFrame
+        perf_df = pd.DataFrame(performance)
+        
+        # Add aggregation by regime type
+        if not perf_df.empty:
+            regime_groups = perf_df.groupby('regime')
+            
+            agg_metrics = regime_groups.agg({
+                'duration_days': 'mean',
+                'daily_return_mean': 'mean',
+                'daily_return_std': 'mean',
+                'daily_sharpe': 'mean',
+                'win_rate': 'mean',
+                'total_return': 'mean'
+            })
+            
+            if f'forward_{return_horizon}d_return_mean' in perf_df.columns:
+                forward_agg = regime_groups.agg({
+                    f'forward_{return_horizon}d_return_mean': 'mean',
+                    f'forward_{return_horizon}d_return_std': 'mean',
+                    f'forward_{return_horizon}d_win_rate': 'mean'
+                })
+                agg_metrics = pd.concat([agg_metrics, forward_agg], axis=1)
+            
+            # Add to performance dataframe
+            perf_df = pd.concat([perf_df, agg_metrics.reset_index().assign(type='average')])
+        
+        return perf_df
+    
+    def create_trading_signals(self,
+                             regime_rules: Dict[str, str] = None) -> pd.DataFrame:
+        """
+        Create trading signals based on regime classification
+        
+        Args:
+            regime_rules (Dict[str, str]): Mapping of regime type to action
+            
+        Returns:
+            pd.DataFrame: Trading signals
+        """
+        if not self.regimes:
+            logger.warning("No regimes available for signal generation")
+            return pd.DataFrame()
+            
+        # Default rules if none provided
+        if regime_rules is None:
+            regime_rules = {
+                'bullish_trending': 'buy',
+                'bullish_volatile': 'buy',
+                'bullish_quiet': 'buy',
+                'recovery': 'buy',
+                'bearish_trending': 'sell',
+                'bearish_volatile': 'sell',
+                'bearish_quiet': 'sell',
+                'crash': 'sell',
+                'high_volatility': 'neutral',
+                'low_volatility_range': 'neutral',
+                'transitional': 'neutral',
+                'undefined': 'neutral'
+            }
+        
+        # Create signals dataframe
+        signals = pd.DataFrame(index=self.df.index)
+        signals['regime'] = pd.Series(dtype=str)
+        signals['signal'] = pd.Series(dtype=str)
+        signals['confidence'] = pd.Series(dtype=float)
+        
+        # Fill signals based on regimes
+        for regime in self.regimes:
+            date_range = self.df[regime.start_date:regime.end_date].index
+            signals.loc[date_range, 'regime'] = regime.regime_type
+            signals.loc[date_range, 'signal'] = regime_rules.get(regime.regime_type, 'neutral')
+            signals.loc[date_range, 'confidence'] = regime.confidence
+        
+        # Convert signals to numeric (-1, 0, 1)
+        signals['position'] = 0
+        signals.loc[signals['signal'] == 'buy', 'position'] = 1
+        signals.loc[signals['signal'] == 'sell', 'position'] = -1
+        
+        # Add close price for reference
+        signals['close'] = self.df['Close']
+        
+        return signals
+    
+    def export_regime_data(self, filename: str = 'regime_data.csv') -> None:
+        """
+        Export regime data to CSV for further analysis
+        
+        Args:
+            filename (str): Output filename
+        """
+        if not self.regimes:
+            logger.warning("No regimes available for export")
+            return
+            
+        # Create export data
+        export_data = []
+        
+        for regime in self.regimes:
+            # Create basic record
+            record = {
+                'regime_type': regime.regime_type,
+                'start_date': regime.start_date,
+                'end_date': regime.end_date,
+                'duration_days': (regime.end_date - regime.start_date).days,
+                'volatility': regime.volatility,
+                'trend': regime.trend,
+                'volume': regime.volume,
+                'confidence': regime.confidence,
+                'stability': regime.stability_score,
+                'expected_duration': regime.expected_duration,
+                'cluster_id': regime.cluster_id
+            }
+            
+            # Add top feature importances
+            if regime.feature_importance:
+                top_features = sorted(
+                    regime.feature_importance.items(),
+                    key=lambda x: x[1],
+                    reverse=True
+                )[:5]
+                
+                for i, (feature, importance) in enumerate(top_features):
+                    record[f'top_feature_{i+1}'] = feature
+                    record[f'feature_{i+1}_importance'] = importance
+            
+            # Add performance metrics
+            regime_data = self.df[regime.start_date:regime.end_date]
+            if len(regime_data) > 1:
+                record['total_return'] = (
+                    regime_data['Close'].iloc[-1] / regime_data['Close'].iloc[0] - 1
+                ) * 100
+                
+                returns = regime_data['Close'].pct_change().dropna()
+                record['daily_return_mean'] = returns.mean() * 100
+                record['daily_return_std'] = returns.std() * 100True
+        )[:top_n]
+        
+        # Create figure
+        fig, ax = plt.subplots(figsize=figure_size)
+        
+        # Plot horizontal bar chart
+        feature_names = [f[0] for f in top_features]
+        importance = [f[1] for f in top_features]
+        
+        # Create bars
+        bars = ax.barh(
+            range(len(feature_names)),
+            importance,
+            align='center',
+            alpha=0.8
+        )
+        
+        # Add feature names
+        ax.set_yticks(range(len(feature_names)))
+        ax.set_yticklabels(feature_names)
+        
+        # Add labels
+        ax.set_xlabel('Importance')
+        ax.set_title('Feature Importance for Regime Detection')
+        
+        # Add values
+        for i, v in enumerate(importance):
+            ax.text(v + 0.01, i, f"{v:.3f}", va='center')
+        
+        # Adjust layout and return
+        plt.tight_layout()
+        return fig
+    
+    def visualize_transition_matrix(self, 
+                                   figure_size: Tuple[int, int] = (10, 8)) -> plt.Figure:
+        """
+        Visualize regime transition matrix
+        
+        Args:
+            figure_size (Tuple[int, int]): Figure size
+            
+        Returns:
+            plt.Figure: Matplotlib figure
+        """
+        if self.transition_matrix.empty:
+            logger.warning("No transition matrix to visualize")
+            return None
+            
+        # Create figure
+        fig, ax = plt.subplots(figsize=figure_size)
+        
+        # Plot heatmap
+        sns.heatmap(
+            self.transition_matrix,
+            annot=True,
+            cmap='viridis',
+            linewidths=0.5,
+            ax=ax,
+            vmin=0,
+            vmax=1,
+            fmt='.2f'
+        )
+        
+        # Add labels
+        ax.set_xlabel('To Regime')
+        ax.set_ylabel('From Regime')
+        ax.set_title('Regime Transition Probabilities')
+        
+        # Adjust layout and return
+        plt.tight_layout()
+        return fig
+    
+    def visualize_feature_space(self,
+                              n_components: int = 2,
+                              figure_size: Tuple[int, int] = (12, 10)) -> plt.Figure:
+        """
+        Visualize clustering in feature space
+        
+        Args:
+            n_components (int): Number of components for visualization (2 or 3)
+            figure_size (Tuple[int, int]): Figure size
+            
+        Returns:
+            plt.Figure: Matplotlib figure
+        """
+        if self.features_processed.empty:
+            logger.warning("No processed features to visualize")
+            return None
+            
+        # Apply PCA for visualization
+        pca = PCA(n_components=n_components)
+        components = pca.fit_transform(self.features_processed.values)
+        
+        # Create dataframe for plotting
+        plot_df = pd.DataFrame(
+            components,
+            index=self.features_processed.index,
+            columns=[f'Component {i+1}' for i in range(n_components)]
+        )
+        
+        # Add cluster labels
+        plot_df['Cluster'] = self.cluster_labels.values
+        
+        # Create figure
+        if n_components == 2:
+            fig, ax = plt.subplots(figsize=figure_size)
+            
+            # Create scatter plot
+            scatter = ax.scatter(
+                plot_df['Component 1'],
+                plot_df['Component 2'],
+                c=plot_df['Cluster'],
+                cmap='tab10',
+                alpha=0.7,
+                s=50
+            )
+            
+            # Add labels
+            ax.set_xlabel(f'Component 1 ({pca.explained_variance_ratio_[0]:.2%} variance)')
+            ax.set_ylabel(f'Component 2 ({pca.explained_variance_ratio_[1]:.2%} variance)')
+            ax.set_title('Clustering Visualization in Feature Space')
+            
+            # Add legend
+            legend = ax.legend(*scatter.legend_elements(), title="Clusters")
+            ax.add_artist(legend)
+            
+        else:  # 3D plot
+            from mpl_toolkits.mplot3d import Axes3D
+            fig = plt.figure(figsize=figure_size)
+            ax = fig.add_subplot(111, projection='3d')
+            
+            # Create scatter plot
+            scatter = ax.scatter(
+                plot_df['Component 1'],
+                plot_df['Component 2'],
+                plot_df['Component 3'],
+                c=plot_df['Cluster'],
+                cmap='tab10',
+                alpha=0.7,
+                s=50
+            )
+            
+            # Add labels
+            ax.set_xlabel(f'Component 1 ({pca.explained_variance_ratio_[0]:.2%})')
+            ax.set_ylabel(f'Component 2 ({pca.explained_variance_ratio_[1]:.2%})')
+            ax.set_zlabel(f'Component 3 ({pca.explained_variance_ratio_[2]:.2%})')
+            ax.set_title('3D Clustering Visualization in Feature Space')
+            
+            # Add legend
+            legend = ax.legend(*scatter.legend_elements(), title="Clusters")
+            ax.add_artist(legend)
+        
+        # Adjust layout and return
+        plt.tight_layout()
+        return fig
+        
+    def predict_next_regime(self, 
+                          current_regime: Optional[ClusteringMarketRegime] = None) -> Dict[str, Any]:
+        """
+        Predict the most likely next regime
+        
+        Args:
+            current_regime (Optional[ClusteringMarketRegime]): Current regime, or use most recent
+            
+        Returns:
+            Dict[str, Any]: Prediction details
+        """
+        # Get current regime if not provided
+        if current_regime is None:
+            if not self.regimes:
+                logger.warning("No regimes available for prediction")
+                return {}
+            current_regime = self.regimes[-1]
+        
+        # Check if we have transition data
+        if self.transition_matrix.empty or current_regime.regime_type not in self.transition_matrix.index:
+            logger.warning("Insufficient transition data for prediction")
+            return {}
+        
+        # Get transition probabilities
+        transitions = self.transition_matrix.loc[current_regime.regime_type]
+        
+        # Sort by probability
+        next_regimes = transitions.sort_values(ascending=False)
+        
+        # Return prediction details
+        return {
+            'current_regime': current_regime.regime_type,
+            'most_likely_next': next_regimes.index[0],
+            'probability': next_regimes.iloc[0],
+            'all_possibilities': next_regimes.to_dict(),
+            'expected_duration_days': current_regime.expected_duration,
+            'current_stability': current_regime.stability_score
+        }
+        
+    def get_regime_characteristics(self, 
+                                 regime_type: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get detailed characteristics for a specific regime type
+        
+        Args:
+            regime_type (Optional[str]): Regime type to analyze, or all if None
+            
+        Returns:
+            Dict[str, Any]: Regime characteristics
+        """
+        # Filter regimes if type specified
+        if regime_type:
+            filtered_regimes = [r for r in self.regimes if r.regime_type == regime_type]
+        else:
+            filtered_regimes = self.regimes
+            
+        if not filtered_regimes:
+            logger.warning(f"No regimes found of type {regime_type}")
+            return {}
+            
+        # Calculate metrics
+        results = {
+            'count': len(filtered_regimes),
+            'avg_duration_days': np.mean([
+                (r.end_date - r.start_date).days for r in filtered_regimes
+            ]),
+            'avg_stability': np.mean([r.stability_score for r in filtered_regimes]),
+            'top_features': self._get_top_features_for_regimes(filtered_regimes),
+            'common_transitions': self._get_common_transitions(filtered_regimes)
+        }
+        
+        # Add price performance if we have data
+        if filtered_regimes:
+            price_performance = []
+            for regime in filtered_regimes:
+                try:
+                    start_price = self.df.loc[regime.start_date, 'Close']
+                    end_price = self.df.loc[regime.end_date, 'Close']
+                    perf = (end_price / start_price - 1) * 100
+                    price_performance.append(perf)
+                except:
+                    continue
+                    
+            if price_performance:
+                results['avg_price_change_pct'] = np.mean(price_performance)
+                results['price_change_std'] = np.std(price_performance)
+                
+        return results
+    
+    def _get_top_features_for_regimes(self, 
+                                   regimes: List[ClusteringMarketRegime], 
+                                   top_n: int = 5) -> Dict[str, float]:
+        """
+        Get top features for a set of regimes
+        
+        Args:
+            regimes (List[ClusteringMarketRegime]): Regimes to analyze
+            top_n (int): Number of top features to return
+            
+        Returns:
+            Dict[str, float]: Top features with importance
+        """
+        # Combine feature importance from all regimes
+        combined = {}
+        for regime in regimes:
+            if regime.feature_importance:
+                for feature, importance in regime.feature_importance.items():
+                    if feature not in combined:
+                        combined[feature] = []
+                    combined[feature].append(importance)
+        
+        # Calculate mean importance
+        mean_importance = {
+            feature: np.mean(values) for feature, values in combined.items()
+        }
+        
+        # Get top features
+        top_features = sorted(
+            mean_importance.items(),
+            key=lambda x: x[1],
+            reverse=
